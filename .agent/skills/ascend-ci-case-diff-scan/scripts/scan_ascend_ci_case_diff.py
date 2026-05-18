@@ -26,7 +26,6 @@ from collections import Counter, defaultdict
 from itertools import zip_longest
 from pathlib import Path
 
-
 IGNORED_WORKFLOW_NAMES = {
     "check-pr-title",
     "doc",
@@ -453,15 +452,9 @@ def compare_case_sets(cpu_gpu_cases: list[dict], npu_cases: list[dict]) -> list[
         npu_only_signatures = sorted(set(npu_by_signature) - set(baseline_by_signature))
         if baseline_only_signatures or npu_only_signatures:
             unmatched_baseline_cases = [
-                case
-                for signature in baseline_only_signatures
-                for case in baseline_by_signature[signature]
+                case for signature in baseline_only_signatures for case in baseline_by_signature[signature]
             ]
-            unmatched_npu_cases = [
-                case
-                for signature in npu_only_signatures
-                for case in npu_by_signature[signature]
-            ]
+            unmatched_npu_cases = [case for signature in npu_only_signatures for case in npu_by_signature[signature]]
             items.append(
                 {
                     "id": stable_id(
@@ -480,9 +473,7 @@ def compare_case_sets(cpu_gpu_cases: list[dict], npu_cases: list[dict]) -> list[
                             format_signature_summary("baseline-only", baseline_only_signatures)
                             if baseline_only_signatures
                             else "",
-                            format_signature_summary("npu-only", npu_only_signatures)
-                            if npu_only_signatures
-                            else "",
+                            format_signature_summary("npu-only", npu_only_signatures) if npu_only_signatures else "",
                         )
                         if part
                     ),
@@ -553,9 +544,7 @@ def render_reference_details(indent: str, label: str, ref: dict | None) -> list[
         return lines
     lines.append(f"{indent}  - Workflow file: `{ref['workflow_path']}`")
     lines.append(f"{indent}  - Line: `{ref['line_number']}`")
-    lines.append(
-        f"{indent}  - Workflow context: `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}`"
-    )
+    lines.append(f"{indent}  - Workflow context: `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}`")
     lines.append(f"{indent}  - Command: `{ref['raw_command']}`")
     return lines
 
@@ -644,16 +633,13 @@ def validate_repo_root(repo_root: Path) -> None:
     workflow_dir = repo_root / ".github" / "workflows"
     if not workflow_dir.is_dir():
         raise FileNotFoundError(
-            "Target repository does not contain '.github/workflows'. "
-            f"Expected workflow directory: {workflow_dir}"
+            f"Target repository does not contain '.github/workflows'. Expected workflow directory: {workflow_dir}"
         )
 
 
 def main() -> int:
     """CLI entrypoint for running the workflow parity scan."""
-    parser = argparse.ArgumentParser(
-        description="Scan Ascend CI case differences for a target verl repository."
-    )
+    parser = argparse.ArgumentParser(description="Scan Ascend CI case differences for a target verl repository.")
     parser.add_argument(
         "--repo-root",
         "--target-repo-root",
