@@ -480,9 +480,9 @@ def compare_case_sets(cpu_gpu_cases: list[dict], npu_cases: list[dict]) -> list[
                     "cpu_gpu_refs": [ref_from_case(case) for case in unmatched_baseline_cases],
                     "npu_refs": [ref_from_case(case) for case in unmatched_npu_cases],
                     "reason": (
-  			  "Target exists in both baseline and NPU workflows, "
-			    "but some command signatures remain unmatched."
-           	    ),
+                        "Target exists in both baseline and NPU workflows, "
+                        "but some command signatures remain unmatched."
+                    ),
                     "confidence": "medium",
                 }
             )
