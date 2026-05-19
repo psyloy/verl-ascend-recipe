@@ -52,6 +52,7 @@ IGNORED_CASE_TARGETS = {"tests/"}
 PYTEST_DIRECTORY_TARGETS = {"tests", "tests/"}
 UT_KIND = "ut"
 ST_KIND = "st"
+CASE_COMPARISON_SECTIONS = ("matched", "cpu_gpu_only", "npu_only", "manual_review")
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "workflow_scope.json"
 
 
@@ -137,24 +138,6 @@ def normalize_signature(command: str, target: str) -> str:
     if "--nproc_per_node" in command or "--nproc-per-node" in command:
         parts.append("torchrun-distributed")
     return " ".join(parts).strip()
-
-
-def pytest_target_shape(raw_target: str) -> str:
-    """Classify pytest targets by how the workflow invokes them."""
-    normalized = normalize_path_text(raw_target)
-    if normalized in PYTEST_DIRECTORY_TARGETS:
-        return "pytest-dir"
-    target_path = Path(normalized)
-    if normalized.endswith(".py"):
-        return "pytest-file"
-    if target_path.suffix == "":
-        return "pytest-dir"
-    return "pytest-target"
-
-
-def append_signature_part(signature: str, part: str) -> str:
-    """Append one normalized signature part while preserving empty signatures."""
-    return part if not signature else f"{signature} {part}"
 
 
 def split_shell_commands(command: str) -> list[str]:
@@ -261,7 +244,7 @@ def extract_pytest_targets(tokens: list[str], pytest_idx: int) -> list[str]:
             idx += 1
             continue
         normalized = normalize_path_text(token.strip("\"'"))
-        if normalized == "tests" or normalized.startswith("tests/"):
+        if normalized in PYTEST_DIRECTORY_TARGETS or normalized.startswith("tests/"):
             targets.append(normalized)
         idx += 1
     return targets
@@ -299,19 +282,10 @@ def extract_bash_target(tokens: list[str]) -> str | None:
 
 def should_keep_target(target: str, command_type: str) -> bool:
     """Drop placeholder paths that do not identify a real test case."""
-    if command_type == "pytest" and normalize_path_text(target) in PYTEST_DIRECTORY_TARGETS:
-        return True
-    return target not in IGNORED_CASE_TARGETS
-
-
-def is_ut_command(command_type: str) -> bool:
-    """Return whether a command should be treated as a UT case."""
-    return command_type == "pytest"
-
-
-def case_kind_for_command(command_type: str) -> str:
-    """Map command types to UT/ST buckets."""
-    return UT_KIND if is_ut_command(command_type) else ST_KIND
+    normalized_target = normalize_path_text(target)
+    return (command_type == "pytest" and normalized_target in PYTEST_DIRECTORY_TARGETS) or (
+        normalized_target not in IGNORED_CASE_TARGETS
+    )
 
 
 def matches_python_file_patterns(path_text: str, python_file_patterns: list[str]) -> bool:
@@ -360,6 +334,7 @@ def expand_python_test_file(path_text: str, repo_root: Path) -> list[str]:
         return [path_text]
     return [f"{path_text}::{function_name}" for function_name in functions]
 
+
 def expand_pytest_directory(
     target_path: Path,
     repo_root: Path,
@@ -379,6 +354,8 @@ def expand_pytest_directory(
             continue
         expanded.extend(expand_python_test_file(path_text, repo_root))
     return expanded
+
+
 def expand_pytest_targets(
     target: str,
     repo_root: Path,
@@ -464,6 +441,20 @@ def extract_cases_from_command(
         for target in extract_pytest_targets(tokens, pytest_idx):
             if not should_keep_target(target, "pytest"):
                 continue
+            normalized_target = normalize_path_text(target)
+            if normalized_target in PYTEST_DIRECTORY_TARGETS or Path(normalized_target).suffix == "":
+                target_shape = "pytest-dir"
+            elif normalized_target.endswith(".py"):
+                target_shape = "pytest-file"
+            else:
+                target_shape = "pytest-target"
+
+            signature = normalize_signature(command, target)
+            if signature:
+                signature = f"{signature} {target_shape}"
+            else:
+                signature = target_shape
+
             cases.append(
                 {
                     "command_type": "pytest",
@@ -477,10 +468,7 @@ def extract_cases_from_command(
                         ignore_globs,
                     ),
                     "raw_command": command,
-                    "signature": append_signature_part(
-                        normalize_signature(command, target),
-                        pytest_target_shape(target),
-                    ),
+                    "signature": signature,
                 }
             )
 
@@ -508,18 +496,6 @@ def build_display_name(case: dict) -> str:
     if case["case_kind"] == UT_KIND:
         return case["target"]
     return f"{case['target']} [{case['workflow_name']} / {case['job_name']} / {case['step_name']}]"
-
-
-def case_sort_key(case: dict) -> tuple:
-    """Stable sort key for rendered cases."""
-    return (
-        case["target"],
-        case["workflow_path"],
-        case["job_name"],
-        case["step_name"],
-        case["line_number"],
-        case["raw_command"],
-    )
 
 
 def parse_workflow(path: Path, repo_root: Path, config: WorkflowConfig) -> tuple[WorkflowInfo | None, list[dict]]:
@@ -622,11 +598,6 @@ def collect_scan_data(repo_root: Path, config: WorkflowConfig) -> tuple[list[Wor
     return workflow_infos, cases, ignored_paths
 
 
-def pair_label_for_workflows(workflow_path: str, workflow_name: str) -> str:
-    """Build a human-readable workflow label for tables."""
-    return f"{workflow_path} ({workflow_name})"
-
-
 def build_workflow_groups(workflow_infos: list[WorkflowInfo]) -> dict[str, dict[str, list[WorkflowInfo]]]:
     """Group workflows by their CPU/GPU vs NPU pairing key."""
     grouped: dict[str, dict[str, list[WorkflowInfo]]] = defaultdict(lambda: {"cpu_gpu": [], "npu": []})
@@ -647,8 +618,7 @@ def summarize_scanned_workflows(
         cpu_gpu_case_ids = {case["case_id"] for case in cases if case["workflow_path"] in cpu_gpu_paths}
         npu_case_ids = {case["case_id"] for case in cases if case["workflow_path"] in npu_paths}
         workflow_names = [
-            pair_label_for_workflows(info.workflow_path, info.workflow_name)
-            for info in workflows["cpu_gpu"] + workflows["npu"]
+            f"{info.workflow_path} ({info.workflow_name})" for info in workflows["cpu_gpu"] + workflows["npu"]
         ]
         rows.append(
             {
@@ -705,12 +675,7 @@ def compare_group_cases(cpu_gpu_cases: list[dict], npu_cases: list[dict]) -> dic
     """Compare CPU/GPU and NPU cases inside one UT/ST bucket."""
     grouped_cpu_gpu: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     grouped_npu: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
-    results = {
-        "matched": [],
-        "cpu_gpu_only": [],
-        "npu_only": [],
-        "manual_review": [],
-    }
+    results = {section_name: [] for section_name in CASE_COMPARISON_SECTIONS}
 
     for case in cpu_gpu_cases:
         grouped_cpu_gpu[(case["command_type"], case["target"], case["signature"])].append(case)
@@ -801,28 +766,23 @@ def compare_group_cases(cpu_gpu_cases: list[dict], npu_cases: list[dict]) -> dic
             }
         )
 
-    for section_name in results:
+    for section_name in CASE_COMPARISON_SECTIONS:
         results[section_name] = sorted(results[section_name], key=lambda item: (item["name"], item["command_type"]))
     return results
 
 
 def compare_cases_by_pair(cases: list[dict], case_kind: str) -> dict[str, list[dict]]:
     """Compare cases inside each workflow pairing group and merge the results."""
-    aggregated = {
-        "matched": [],
-        "cpu_gpu_only": [],
-        "npu_only": [],
-        "manual_review": [],
-    }
+    aggregated = {section_name: [] for section_name in CASE_COMPARISON_SECTIONS}
     pair_keys = sorted({case["pair_key"] for case in cases})
     for pair_key in pair_keys:
         pair_cases = [case for case in cases if case["pair_key"] == pair_key and case["case_kind"] == case_kind]
         cpu_gpu_cases = [case for case in pair_cases if case["workflow_kind"] in {"cpu", "gpu"}]
         npu_cases = [case for case in pair_cases if case["workflow_kind"] == "npu"]
         comparison = compare_group_cases(cpu_gpu_cases, npu_cases)
-        for section_name in aggregated:
+        for section_name in CASE_COMPARISON_SECTIONS:
             aggregated[section_name].extend(comparison[section_name])
-    for section_name in aggregated:
+    for section_name in CASE_COMPARISON_SECTIONS:
         aggregated[section_name] = sorted(
             aggregated[section_name],
             key=lambda item: (item["name"], item["command_type"]),
