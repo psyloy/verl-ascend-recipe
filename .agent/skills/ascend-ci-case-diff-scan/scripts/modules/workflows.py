@@ -26,7 +26,6 @@ from .extractors import (
     extract_bash_target,
     extract_pytest_ignore_specs,
     extract_pytest_targets,
-    extract_step_python_file_patterns,
     extract_torchrun_targets,
     should_keep_target,
 )
@@ -147,7 +146,6 @@ def _expand_case_record(
 def _extract_cases_from_command(
     command: str,
     repo_root: Path,
-    python_file_patterns: list[str] | None = None,
 ) -> list[dict]:
     command = command.strip()
     if not command or command.startswith("#"):
@@ -214,7 +212,6 @@ def _extract_cases_from_command(
                     "targets": expand_pytest_targets(
                         target,
                         repo_root,
-                        python_file_patterns or [],
                         ignore_paths,
                         ignore_globs,
                     ),
@@ -271,10 +268,9 @@ def parse_workflow(path: Path, repo_root: Path, config: WorkflowConfig) -> tuple
         if run_match:
             indent = len(run_match.group(1))
             run_entries, next_idx = _extract_run_entries(lines, idx, indent, run_match.group(2).strip())
-            python_file_patterns = extract_step_python_file_patterns(run_entries)
             for raw, line_number in run_entries:
                 for command in split_shell_commands(raw):
-                    for case in _extract_cases_from_command(command, repo_root, python_file_patterns):
+                    for case in _extract_cases_from_command(command, repo_root):
                         cases.extend(
                             _expand_case_record(
                                 case,

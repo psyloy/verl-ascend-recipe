@@ -18,26 +18,10 @@
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 from .config import load_text
-from .shell import (
-    PATH_VALUE_OPTIONS,
-    PYTEST_DIRECTORY_TARGETS,
-    PYTEST_OPTIONS_WITH_VALUE,
-    normalize_path_text,
-)
-
-
-def extract_step_python_file_patterns(run_entries: list[tuple[str, int]]) -> list[str]:
-    """Extract pytest file-name filters configured earlier in the same run block."""
-    patterns: list[str] = []
-    for raw, _line_number in run_entries:
-        match = re.search(r"python_files\s*=\s*([^\s'\"`]+)", raw)
-        if match:
-            patterns.append(match.group(1).strip())
-    return patterns
+from .shell import PATH_VALUE_OPTIONS, PYTEST_DIRECTORY_TARGETS, PYTEST_OPTIONS_WITH_VALUE, normalize_path_text
 
 
 def extract_pytest_ignore_specs(tokens: list[str], pytest_idx: int) -> tuple[list[str], list[str]]:
@@ -133,14 +117,12 @@ def should_keep_target(target: str, command_type: str) -> bool:
     )
 
 
-def matches_python_file_patterns(path_text: str, python_file_patterns: list[str]) -> bool:
-    """Check whether a discovered file name matches the configured pytest file patterns."""
+def matches_python_file_patterns(path_text: str) -> bool:
+    """Check whether a discovered file name matches the default pytest test file pattern."""
     from fnmatch import fnmatch
 
     file_name = Path(path_text).name
-    if not python_file_patterns:
-        return fnmatch(file_name, "test_*.py")
-    return any(fnmatch(file_name, pattern) for pattern in python_file_patterns)
+    return fnmatch(file_name, "test_*.py")
 
 
 def is_ignored_pytest_target(path_text: str, ignore_paths: list[str], ignore_globs: list[str]) -> bool:
@@ -187,7 +169,6 @@ def expand_python_test_file(path_text: str, repo_root: Path) -> list[str]:
 def expand_pytest_directory(
     target_path: Path,
     repo_root: Path,
-    python_file_patterns: list[str],
     ignore_paths: list[str],
     ignore_globs: list[str],
 ) -> list[str]:
@@ -197,7 +178,7 @@ def expand_pytest_directory(
         if not path.is_file():
             continue
         path_text = normalize_path_text(path.relative_to(repo_root).as_posix())
-        if not matches_python_file_patterns(path_text, python_file_patterns):
+        if not matches_python_file_patterns(path_text):
             continue
         if is_ignored_pytest_target(path_text, ignore_paths, ignore_globs):
             continue
@@ -208,7 +189,6 @@ def expand_pytest_directory(
 def expand_pytest_targets(
     target: str,
     repo_root: Path,
-    python_file_patterns: list[str],
     ignore_paths: list[str],
     ignore_globs: list[str],
 ) -> list[str]:
@@ -219,7 +199,6 @@ def expand_pytest_targets(
         return expand_pytest_directory(
             target_path,
             repo_root,
-            python_file_patterns,
             ignore_paths,
             ignore_globs,
         )
