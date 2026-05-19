@@ -18,25 +18,17 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
-from .config import is_ignored_workflow, load_text
+from .config import ST_KIND, UT_KIND, WorkflowConfig, WorkflowInfo, is_ignored_workflow, load_text
 from .extractors import (
     expand_pytest_targets,
     extract_bash_target,
-    extract_pytest_ignore_specs,
-    extract_pytest_targets,
+    extract_pytest_specs,
     extract_torchrun_targets,
-    should_keep_target,
-)
-from .models import ST_KIND, UT_KIND, WorkflowConfig, WorkflowInfo
-from .shell import (
-    command_uses_pytest,
-    command_uses_torchrun,
     normalize_path_text,
-    normalize_signature,
-    split_shell_commands,
-    tokenize_command,
+    should_keep_target,
 )
 
 WORKFLOW_NAME_RE = re.compile(r"^\s*name:\s*(.+?)\s*$")
@@ -45,6 +37,8 @@ STEP_NAME_RE = re.compile(r"^(\s*)-\s+name:\s*(.+?)\s*$")
 RUN_RE = re.compile(r"^(\s*)run:\s*(.*)$")
 RUNS_ON_ASCEND_RE = re.compile(r"runs-on:\s+.*(?:aarch64|a2|a3)", re.IGNORECASE)
 IMAGE_ASCEND_RE = re.compile(r"image:\s+.*ascend", re.IGNORECASE)
+ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+)+")
+TORCHRUN_RE = re.compile(r"\btorchrun\b")
 
 
 def classify_workflow(file_stem: str, content: str) -> str:
@@ -69,20 +63,72 @@ def workflow_pair_key(file_stem: str) -> str:
     return stem
 
 
+def normalize_signature(command: str, target: str) -> str:
+    """Keep only the command prefixes that materially affect parity matching."""
+    idx = command.find(target) if target else -1
+    env_match = ENV_PREFIX_RE.match(command[:idx] if idx != -1 else command)
+    env_prefix = env_match.group(0).strip() if env_match else ""
+    parts: list[str] = []
+    for key in ("ROLLOUT_NAME", "ENGINE", "STRATEGY", "MODE", "RESUME_MODE", "BACKEND"):
+        match = re.search(rf"{key}=([^\s]+)", env_prefix)
+        if match:
+            parts.append(match.group(0))
+    if "--nproc_per_node" in command or "--nproc-per-node" in command:
+        parts.append("torchrun-distributed")
+    return " ".join(parts).strip()
+
+
+def split_shell_commands(command: str) -> list[str]:
+    """Split a shell line on common shell separators while respecting simple quote scopes."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_single = False
+    in_double = False
+    idx = 0
+    while idx < len(command):
+        ch = command[idx]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        if not in_single and not in_double:
+            separator = ";" if ch == ";" else next((sep for sep in ("&&", "||") if command.startswith(sep, idx)), None)
+            if separator:
+                part = "".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                idx += len(separator)
+                continue
+
+        current.append(ch)
+        idx += 1
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def tokenize_command(command: str) -> list[str]:
+    """Tokenize shell text conservatively and fall back when quoting is malformed."""
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def command_uses_torchrun(command: str, tokens: list[str]) -> bool:
+    return "torchrun" in tokens or bool(TORCHRUN_RE.search(command))
+
+
+def command_uses_pytest(tokens: list[str]) -> bool:
+    return "pytest" in tokens
+
+
 def build_case_id(case: dict) -> str:
     """Build a per-occurrence case key that preserves workflow/job/step distinctions."""
-    return "|".join(
-        [
-            case["case_kind"],
-            case["command_type"],
-            case["target"],
-            case["signature"],
-            case["workflow_name"],
-            case["job_name"],
-            case["step_name"],
-            str(case["line_number"]),
-        ]
-    )
+    keys = ("case_kind", "command_type", "target", "signature", "workflow_name", "job_name", "step_name")
+    return "|".join([*(case[key] for key in keys), str(case["line_number"])])
 
 
 def build_display_name(case: dict) -> str:
@@ -111,6 +157,17 @@ def _extract_run_entries(
         run_entries.append((stripped, idx + 1))
         idx += 1
     return run_entries, idx
+
+
+def _make_command_case(command_type: str, case_kind: str, target: str, command: str, targets: list[str]) -> dict:
+    return {
+        "command_type": command_type,
+        "case_kind": case_kind,
+        "target": target,
+        "targets": targets,
+        "raw_command": command,
+        "signature": normalize_signature(command, target),
+    }
 
 
 def _expand_case_record(
@@ -160,36 +217,18 @@ def _extract_cases_from_command(
     cases: list[dict] = []
     bash_target = extract_bash_target(tokens)
     if bash_target and should_keep_target(bash_target, "bash"):
-        cases.append(
-            {
-                "command_type": "bash",
-                "case_kind": ST_KIND,
-                "target": bash_target,
-                "targets": [bash_target],
-                "raw_command": command,
-                "signature": normalize_signature(command, bash_target),
-            }
-        )
+        cases.append(_make_command_case("bash", ST_KIND, bash_target, command, [bash_target]))
 
     if command_uses_torchrun(command, tokens):
         torchrun_idx = tokens.index("torchrun") if "torchrun" in tokens else 0
         for target in extract_torchrun_targets(tokens, torchrun_idx):
             if not should_keep_target(target, "torchrun"):
                 continue
-            cases.append(
-                {
-                    "command_type": "torchrun",
-                    "case_kind": ST_KIND,
-                    "target": target,
-                    "targets": [target],
-                    "raw_command": command,
-                    "signature": normalize_signature(command, target),
-                }
-            )
+            cases.append(_make_command_case("torchrun", ST_KIND, target, command, [target]))
     elif command_uses_pytest(tokens):
         pytest_idx = tokens.index("pytest")
-        ignore_paths, ignore_globs = extract_pytest_ignore_specs(tokens, pytest_idx)
-        for target in extract_pytest_targets(tokens, pytest_idx):
+        targets, ignore_paths, ignore_globs = extract_pytest_specs(tokens, pytest_idx)
+        for target in targets:
             if not should_keep_target(target, "pytest"):
                 continue
             normalized_target = normalize_path_text(target)
@@ -201,26 +240,15 @@ def _extract_cases_from_command(
                 target_shape = "pytest-target"
 
             signature = normalize_signature(command, target)
-            if signature:
-                signature = f"{signature} {target_shape}"
-            else:
-                signature = target_shape
-
-            cases.append(
-                {
-                    "command_type": "pytest",
-                    "case_kind": UT_KIND,
-                    "target": target,
-                    "targets": expand_pytest_targets(
-                        target,
-                        repo_root,
-                        ignore_paths,
-                        ignore_globs,
-                    ),
-                    "raw_command": command,
-                    "signature": signature,
-                }
+            case = _make_command_case(
+                "pytest",
+                UT_KIND,
+                target,
+                command,
+                expand_pytest_targets(target, repo_root, ignore_paths, ignore_globs),
             )
+            case["signature"] = f"{signature} {target_shape}" if signature else target_shape
+            cases.append(case)
 
     deduped: list[dict] = []
     seen = set()

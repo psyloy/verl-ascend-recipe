@@ -50,13 +50,11 @@ def render_adjacent_pairs(cpu_gpu_refs: list[dict], npu_refs: list[dict]) -> lis
 
 def render_table(headers: list[str], rows: list[list[str]]) -> list[str]:
     """Render a Markdown table."""
-    lines = [
+    return [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join(["---"] * len(headers)) + " |",
+        *("| " + " | ".join(row) + " |" for row in rows),
     ]
-    for row in rows:
-        lines.append("| " + " | ".join(row) + " |")
-    return lines
 
 
 def render_case_section(title: str, items: list[dict]) -> list[str]:
@@ -70,16 +68,6 @@ def render_case_section(title: str, items: list[dict]) -> list[str]:
         lines.append(f"- Case path: `{item['name']}`")
         lines.extend(render_adjacent_pairs(item["cpu_gpu_refs"], item["npu_refs"]))
     lines.append("")
-    return lines
-
-
-def render_details_block(title: str, comparison: dict[str, list[dict]]) -> list[str]:
-    """Render UT or ST comparison details in the requested order."""
-    lines = [f"## {title}", ""]
-    lines.extend(render_case_section("Matched Cases", comparison["matched"]))
-    lines.extend(render_case_section("CPU/GPU-only Cases", comparison["cpu_gpu_only"]))
-    lines.extend(render_case_section("NPU-only Cases", comparison["npu_only"]))
-    lines.extend(render_case_section("Manual Review", comparison["manual_review"]))
     return lines
 
 
@@ -127,6 +115,13 @@ def render_report(report: dict) -> str:
         )
     else:
         lines.append("No workflows were scanned.")
-    lines.extend(["", *render_details_block("UT Case Details", report["ut_details"])])
-    lines.extend(["", *render_details_block("ST Case Details", report["st_details"])])
+    for title, key in (("UT Case Details", "ut_details"), ("ST Case Details", "st_details")):
+        lines.extend([f"## {title}", ""])
+        for section_title, section_key in (
+            ("Matched Cases", "matched"),
+            ("CPU/GPU-only Cases", "cpu_gpu_only"),
+            ("NPU-only Cases", "npu_only"),
+            ("Manual Review", "manual_review"),
+        ):
+            lines.extend(render_case_section(section_title, report[key][section_key]))
     return "\n".join(lines).rstrip() + "\n"

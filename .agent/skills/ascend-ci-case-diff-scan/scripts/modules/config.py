@@ -18,10 +18,28 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from .models import CONFIG_PATH, WorkflowConfig
+UT_KIND = "ut"
+ST_KIND = "st"
+CASE_COMPARISON_SECTIONS = ("matched", "cpu_gpu_only", "npu_only", "manual_review")
+CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "workflow_scope.json"
+
+
+@dataclass(frozen=True)
+class WorkflowConfig:
+    ignored_workflows: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkflowInfo:
+    workflow_name: str
+    workflow_path: str
+    file_name: str
+    workflow_kind: str
+    pair_key: str
 
 
 def load_text(path: Path) -> str:

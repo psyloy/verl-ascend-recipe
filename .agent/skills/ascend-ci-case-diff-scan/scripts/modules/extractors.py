@@ -18,14 +18,33 @@
 from __future__ import annotations
 
 import ast
+from fnmatch import fnmatch
 from pathlib import Path
 
 from .config import load_text
-from .shell import PATH_VALUE_OPTIONS, PYTEST_DIRECTORY_TARGETS, PYTEST_OPTIONS_WITH_VALUE, normalize_path_text
+
+PATH_VALUE_OPTIONS = {"--ignore", "--ignore-glob"}
+PYTEST_DIRECTORY_TARGETS = {"tests", "tests/"}
+PYTEST_OPTIONS_WITH_VALUE = {
+    "-k",
+    "-m",
+    "--maxfail",
+    "--rootdir",
+    "--log-level",
+    "--capture",
+    "--asyncio-mode",
+    "--durations",
+}
 
 
-def extract_pytest_ignore_specs(tokens: list[str], pytest_idx: int) -> tuple[list[str], list[str]]:
-    """Extract ignore path and ignore glob options from a pytest command."""
+def normalize_path_text(value: str) -> str:
+    """Normalize filesystem-like text so matching stays stable across platforms."""
+    return value.replace("\\", "/").strip()
+
+
+def extract_pytest_specs(tokens: list[str], pytest_idx: int) -> tuple[list[str], list[str], list[str]]:
+    """Extract pytest targets and ignore options without mistaking option values for paths."""
+    targets: list[str] = []
     ignore_paths: list[str] = []
     ignore_globs: list[str] = []
     idx = pytest_idx + 1
@@ -39,34 +58,15 @@ def extract_pytest_ignore_specs(tokens: list[str], pytest_idx: int) -> tuple[lis
                 ignore_globs.append(value)
             idx += 2
             continue
+        if token in PYTEST_OPTIONS_WITH_VALUE:
+            idx += 2
+            continue
         if token.startswith("--ignore="):
             ignore_paths.append(normalize_path_text(token.split("=", 1)[1].strip("\"'")))
             idx += 1
             continue
         if token.startswith("--ignore-glob="):
             ignore_globs.append(normalize_path_text(token.split("=", 1)[1].strip("\"'")))
-            idx += 1
-            continue
-        idx += 1
-    return ignore_paths, ignore_globs
-
-
-def extract_pytest_targets(tokens: list[str], pytest_idx: int) -> list[str]:
-    """Extract test targets from a pytest command without mistaking option values for paths."""
-    targets: list[str] = []
-    skip_next = False
-    idx = pytest_idx + 1
-    while idx < len(tokens):
-        token = tokens[idx]
-        if skip_next:
-            skip_next = False
-            idx += 1
-            continue
-        if token in PATH_VALUE_OPTIONS or token in PYTEST_OPTIONS_WITH_VALUE:
-            skip_next = True
-            idx += 1
-            continue
-        if token.startswith("--ignore=") or token.startswith("--ignore-glob="):
             idx += 1
             continue
         if token.startswith("-"):
@@ -76,7 +76,7 @@ def extract_pytest_targets(tokens: list[str], pytest_idx: int) -> list[str]:
         if normalized in PYTEST_DIRECTORY_TARGETS or normalized.startswith("tests/"):
             targets.append(normalized)
         idx += 1
-    return targets
+    return targets, ignore_paths, ignore_globs
 
 
 def extract_torchrun_targets(tokens: list[str], torchrun_idx: int) -> list[str]:
@@ -117,18 +117,8 @@ def should_keep_target(target: str, command_type: str) -> bool:
     )
 
 
-def matches_python_file_patterns(path_text: str) -> bool:
-    """Check whether a discovered file name matches the default pytest test file pattern."""
-    from fnmatch import fnmatch
-
-    file_name = Path(path_text).name
-    return fnmatch(file_name, "test_*.py")
-
-
 def is_ignored_pytest_target(path_text: str, ignore_paths: list[str], ignore_globs: list[str]) -> bool:
     """Check whether a discovered test file should be excluded by pytest ignore options."""
-    from fnmatch import fnmatch
-
     normalized = normalize_path_text(path_text)
     for ignore_path in ignore_paths:
         candidate = normalize_path_text(ignore_path)
@@ -178,7 +168,7 @@ def expand_pytest_directory(
         if not path.is_file():
             continue
         path_text = normalize_path_text(path.relative_to(repo_root).as_posix())
-        if not matches_python_file_patterns(path_text):
+        if not fnmatch(Path(path_text).name, "test_*.py"):
             continue
         if is_ignored_pytest_target(path_text, ignore_paths, ignore_globs):
             continue

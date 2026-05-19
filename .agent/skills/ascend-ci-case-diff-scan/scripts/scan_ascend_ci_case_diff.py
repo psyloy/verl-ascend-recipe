@@ -18,11 +18,13 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 from pathlib import Path
 
-from modules.config import load_config, validate_repo_root
+from modules.compare import compare_cases_by_pair, summarize_scanned_workflows
+from modules.config import ST_KIND, UT_KIND, load_config, validate_repo_root
 from modules.render import render_report
-from modules.scanner import build_report
+from modules.workflows import build_workflow_groups, collect_scan_data
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,7 +54,16 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     config = load_config()
-    report = build_report(repo_root, config)
+    workflow_infos, cases, ignored_paths = collect_scan_data(repo_root, config)
+    grouped_workflows = build_workflow_groups(workflow_infos)
+    report = {
+        "repo_root": str(repo_root),
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "ignored_workflows": ignored_paths,
+        "scanned_workflows": summarize_scanned_workflows(grouped_workflows, cases),
+        "ut_details": compare_cases_by_pair(cases, UT_KIND),
+        "st_details": compare_cases_by_pair(cases, ST_KIND),
+    }
     report_path = output_dir / "report.md"
     report_path.write_text(render_report(report), encoding="utf-8")
     print(report_path)
