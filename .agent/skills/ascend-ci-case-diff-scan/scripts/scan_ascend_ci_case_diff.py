@@ -32,7 +32,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan Ascend CI case differences for a target verl repository.")
     parser.add_argument(
         "--repo-root",
-        "--target-repo-root",
         dest="repo_root",
         required=True,
         help="Path to the target verl repository root to analyze.",
