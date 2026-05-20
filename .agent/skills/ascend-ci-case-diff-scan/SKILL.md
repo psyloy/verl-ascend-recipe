@@ -51,7 +51,7 @@ For ST scripts, record only scripts explicitly invoked by the workflow step; do 
 ## Boundaries
 
 - Ignore commented workflow lines.
-- Ignore `cpu_unit_tests.yml` because it is treated as shared CPU/GPU/NPU baseline coverage, not an NPU-adaptation target.
+- Ignore workflows matched by `config/workflow_scope.json`, including shared baseline and workflows without meaningful CPU/GPU-vs-NPU test coverage.
 - Do not execute tests.
 - Do not expand GitHub Actions matrices.
 - Keep the final report in English only.

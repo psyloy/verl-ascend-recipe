@@ -4,8 +4,7 @@ This skill statically audits a target `verl` repository and reports workflow/cas
 
 ## What it does
 
-- Excludes non-test workflows through `config/workflow_scope.json`
-- Excludes `cpu_unit_tests.yml` from the scan because it is treated as shared baseline coverage rather than an NPU-adapted workflow
+- Excludes non-test and non-comparable workflows through `config/workflow_scope.json`
 - Pairs CPU/GPU workflows with their NPU counterparts
 - Counts UT cases at the test-function or test-method level
 - Counts ST cases at the command level
