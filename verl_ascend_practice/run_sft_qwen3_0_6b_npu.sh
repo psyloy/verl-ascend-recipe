@@ -3,18 +3,18 @@
 
 # Examples:
 #   # plain SFT on Ascend A3 device
-#   bash run_qwen3_0_6b_ascend_a3_fsdp.sh
+#   bash run_sft_qwen3_0_6b_npu.sh
 
 set -x
 
 # ---- Ascend A3 fixed config ----
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-nproc_per_node=16
+
 master_port=$(shuf -i 20000-65535 -n 1)
 # ---- end Ascend A3 fixed config ----
 
-
 # ---- user-adjustable ----
+NPROC_PER_NODE=${NPROC_PER_NODE:-16}
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-0.6B}
 SAVE_PATH=${SAVE_PATH:-verl_output}
 SP_SIZE=${SP_SIZE:-1}
@@ -28,7 +28,7 @@ EXPERIMENT_NAME=${EXPERIMENT_NAME:-gsm8k-sft-qwen3-0-6b-instruct-a3}
 # ---- end user-adjustable ----
 
 
-torchrun --nnodes=1 --nproc_per_node=${nproc_per_node} --master_port=${master_port} \
+torchrun --nnodes=1 --nproc_per_node=${NPROC_PER_NODE} --master_port=${master_port} \
   -m verl.trainer.sft_trainer \
   data.train_files=$HOME/data/gsm8k/train.parquet \
   data.val_files=$HOME/data/gsm8k/test.parquet \
