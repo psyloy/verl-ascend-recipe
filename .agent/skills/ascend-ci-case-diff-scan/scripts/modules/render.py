@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from itertools import zip_longest
 
 
@@ -166,47 +165,75 @@ def render_past_commit_report(report: dict) -> str:
             )
         )
     else:
-        lines.append("No CI-related commits were found in the selected window.")
-    lines.extend(["", "## Commit Details", ""])
-    details = report["details"]
-    if not details:
+        lines.append("No changed CPU/GPU workflow cases are missing or divergent on NPU in the selected window.")
+
+    lines.extend(["", "## Changed Workflows", ""])
+    workflow_rows = [
+        [
+            row["workflow_path"],
+            row["workflow_status"],
+            str(row["case_count_base"]),
+            str(row["case_count_head"]),
+            str(row["ut_gap_count"]),
+            str(row["st_gap_count"]),
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+        ]
+        for row in report["workflow_changes"]
+    ]
+    if workflow_rows:
+        lines.extend(
+            render_table(
+                [
+                    "Workflow",
+                    "Change",
+                    "Base Case Count",
+                    "HEAD Case Count",
+                    "UT Gap Count",
+                    "ST Gap Count",
+                    "Related Commits",
+                ],
+                workflow_rows,
+            )
+        )
+    else:
+        lines.append("No effective workflow or workflow-referenced UT/ST changes were found in the selected window.")
+
+    lines.extend(["", "## Changed Case Details", ""])
+    case_details = report["case_details"]
+    if not case_details:
         lines.append("- None")
     else:
-        for commit_hash, commit_rows in _group_rows_by_commit(details).items():
-            first = commit_rows[0]
-            lines.append(f"- Commit `{first['commit_hash']}` - {first['commit_title']}")
-            lines.append(f"  - Time: `{first['commit_time']}`")
-            lines.append("  - Effective changed files:")
-            for changed_file in first["effective_changed_files"]:
+        for row in case_details:
+            lines.append(f"- Case: `{row['case_name']}`")
+            lines.append(f"  - Kind: `{row['case_kind']}`")
+            lines.append(f"  - Workflow: `{row['workflow_path']}`")
+            lines.append(f"  - Line number: `{row['line_number']}`")
+            lines.append(f"  - Workflow context: `{row['workflow_context']}`")
+            lines.append(f"  - Command: `{row['raw_command']}`")
+            lines.append(f"  - NPU support: `{row['npu_status']}`")
+            lines.append(f"  - Related commits: `{', '.join(commit[:12] for commit in row['commit_hashes'])}`")
+            if row["npu_refs"]:
+                lines.append("  - NPU refs:")
+                for ref in row["npu_refs"]:
+                    lines.append(
+                        f"    - `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}` "
+                        f"`{ref['workflow_path']}` line `{ref['line_number']}`"
+                    )
+            else:
+                lines.append("  - NPU refs: None")
+
+    lines.extend(["", "## Commit Details", ""])
+    commit_details = report["commit_details"]
+    if not commit_details:
+        lines.append("- None")
+    else:
+        for row in commit_details:
+            lines.append(f"- Commit `{row['commit_hash']}` - {row['commit_title']}")
+            lines.append(f"  - Time: `{row['commit_time']}`")
+            lines.append("  - Changed files:")
+            for changed_file in row["changed_files"]:
                 lines.append(f"    - `{changed_file}`")
-            lines.append("  - Cases:")
-            for row in commit_rows:
-                lines.append(f"    - Case: `{row['case_name']}`")
-                lines.append(f"      - Kind: `{row['case_kind']}`")
-                lines.append(f"      - Affected path: `{row['affected_path']}`")
-                lines.append(f"      - Line number: `{row['line_number']}`")
-                lines.append(f"      - Workflow context: `{row['workflow_context']}`")
-                lines.append(f"      - Source type: `{row['source_type']}`")
-                lines.append(f"      - Status: `{row['npu_status']}`")
-                if row["npu_refs"]:
-                    lines.append("      - NPU refs:")
-                    for ref in row["npu_refs"]:
-                        lines.append(
-                            f"        - `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}` "
-                            f"`{ref['workflow_path']}` line `{ref['line_number']}`"
-                        )
-                else:
-                    lines.append("      - NPU refs: None")
+            lines.append("  - Effective workflows:")
+            for workflow_path in row["affected_workflows"]:
+                lines.append(f"    - `{workflow_path}`")
     return "\n".join(lines).rstrip() + "\n"
-
-
-def _group_rows_by_commit(details: list[dict]) -> dict[str, list[dict]]:
-    grouped: dict[str, list[dict]] = defaultdict(list)
-    for row in details:
-        grouped[row["commit_hash"]].append(row)
-    return dict(
-        sorted(
-            grouped.items(),
-            key=lambda item: (item[1][0]["commit_time"], item[0]),
-        )
-    )

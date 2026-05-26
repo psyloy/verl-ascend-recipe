@@ -26,8 +26,10 @@ DEFAULT_COLUMN_WIDTH = 18
 IGNORED_WORKFLOW_WIDTHS = (70,)
 SCANNED_WORKFLOW_WIDTHS = (90, 22, 26)
 CASE_DETAIL_WIDTHS = (64, 16, 52, 14, 56, 88, 52, 14, 56, 88)
-PAST_SUMMARY_WIDTHS = (14, 48, 24, 12, 12)
-PAST_DETAIL_WIDTHS = (42, 24, 16, 24, 20, 52, 14, 56, 88, 26, 64, 64)
+PAST_SUMMARY_WIDTHS = (42, 16, 12, 12, 12)
+PAST_WORKFLOW_WIDTHS = (48, 16, 12, 12, 12, 12, 32)
+PAST_CASE_WIDTHS = (48, 16, 46, 26, 20, 54, 18, 64, 18, 54)
+PAST_DETAIL_WIDTHS = (42, 24, 36, 42)
 CASE_STATUS_LABELS = (
     ("matched", "Matched"),
     ("cpu_gpu_only", "CPU/GPU Only"),
@@ -51,6 +53,8 @@ def write_past_commit_excel_report(path: Path, report: dict) -> None:
     """Write the past-N-days report as a minimal XLSX workbook."""
     sheets = [
         ("Summary", _past_summary_rows(report), PAST_SUMMARY_WIDTHS),
+        ("Changed Workflows", _past_workflow_rows(report), PAST_WORKFLOW_WIDTHS),
+        ("Changed Cases", _past_case_rows(report), PAST_CASE_WIDTHS),
         ("Commit Details", _past_detail_rows(report), PAST_DETAIL_WIDTHS),
     ]
     _write_workbook(path, sheets)
@@ -291,14 +295,72 @@ def _xml_text(value: str) -> str:
 
 
 def _past_summary_rows(report: dict) -> list[list[object]]:
-    rows = [["CPU/GPU and NPU Not Fully Aligned Cases", "UT Gap Count", "ST Gap Count"]]
+    rows = [["Workflow", "UT Gap Count", "ST Gap Count", "Change Count", "Related Commits"]]
     rows.extend(
         [
-            row["affected_path"],
+            row["workflow_path"],
             row["ut_gap_count"],
             row["st_gap_count"],
+            len(row["commit_hashes"]),
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
         ]
-        for row in report["summary"]
+        for row in report["workflow_changes"]
+    )
+    return rows
+
+
+def _past_workflow_rows(report: dict) -> list[list[object]]:
+    rows = [["Workflow", "Change", "Base Cases", "HEAD Cases", "UT Gap", "ST Gap", "Related Commits"]]
+    rows.extend(
+        [
+            row["workflow_path"],
+            row["workflow_status"],
+            row["case_count_base"],
+            row["case_count_head"],
+            row["ut_gap_count"],
+            row["st_gap_count"],
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+        ]
+        for row in report["workflow_changes"]
+    )
+    return rows
+
+
+def _past_case_rows(report: dict) -> list[list[object]]:
+    rows = [
+        [
+            "Workflow",
+            "Case Name",
+            "Kind",
+            "Target",
+            "Line",
+            "Workflow Context",
+            "NPU Status",
+            "Related Commits",
+            "NPU Refs",
+        ]
+    ]
+    rows.extend(
+        [
+            row["workflow_path"],
+            row["case_name"],
+            row["case_kind"],
+            row["target"],
+            row["line_number"],
+            row["workflow_context"],
+            row["npu_status"],
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+            _excel_multiline(
+                "\n".join(
+                    f"{ref['workflow_name']} / {ref['job_name']} / "
+                    f"{ref['step_name']} {ref['workflow_path']}:{ref['line_number']}"
+                    for ref in row["npu_refs"]
+                )
+            )
+            if row["npu_refs"]
+            else "",
+        ]
+        for row in report["case_details"]
     )
     return rows
 
@@ -309,30 +371,16 @@ def _past_detail_rows(report: dict) -> list[list[object]]:
             "Commit Hash",
             "Commit Time",
             "Commit Title",
-            "Effective Changed Files",
-            "Affected Path",
-            "Line Number",
-            "Workflow Context",
-            "Source Type",
-            "Case Name",
-            "Case Kind",
-            "NPU Status",
+            "Affected Workflows",
         ]
     ]
-    for row in report["details"]:
+    for row in report["commit_details"]:
         rows.append(
             [
                 row["commit_hash"],
                 row["commit_time"],
                 row["commit_title"],
-                _excel_multiline("<br>".join(row["effective_changed_files"])),
-                row["affected_path"],
-                row["line_number"],
-                row["workflow_context"],
-                row["source_type"],
-                row["case_name"],
-                row["case_kind"],
-                row["npu_status"],
+                _excel_multiline("\n".join(row["affected_workflows"])),
             ]
         )
     return rows

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import subprocess
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,9 +27,10 @@ from pathlib import Path
 from .compare import compare_cases_by_pair
 from .config import ST_KIND, UT_KIND, WorkflowConfig
 from .extractors import normalize_path_text
-from .workflows import parse_workflow_content
+from .workflows import build_workflow_groups, collect_scan_data
 
 WORKFLOW_PREFIX = ".github/workflows/"
+RELEVANT_PREFIXES = (".github/workflows/", "tests/")
 REPORT_STATUSES = {
     "matched": "aligned",
     "cpu_gpu_only": "missing_in_npu_workflows",
@@ -55,181 +57,276 @@ def _run_git(repo_root: Path, *args: str) -> str:
     return result.stdout
 
 
-def _is_ci_related(path_text: str) -> bool:
+def _normalize_commit_commit_hash(commit_hash: str) -> str:
+    return commit_hash.strip()
+
+
+def _is_relevant_path(path_text: str) -> bool:
     normalized = normalize_path_text(path_text)
-    return normalized.startswith(WORKFLOW_PREFIX)
+    return normalized.startswith(RELEVANT_PREFIXES) or (
+        normalized.startswith("examples/") and normalized.endswith(".sh")
+    )
 
 
 def _is_workflow_path(path_text: str) -> bool:
     normalized = normalize_path_text(path_text)
-    return normalized.startswith(".github/workflows/") and normalized.endswith((".yml", ".yaml"))
+    return normalized.startswith(WORKFLOW_PREFIX) and normalized.endswith((".yml", ".yaml"))
 
 
-def list_recent_commits(repo_root: Path, since_days: int) -> list[CommitInfo]:
-    """Return commits in HEAD history during the last N days that touch CI-related paths."""
+def _get_first_parent_commits(repo_root: Path, since_days: int) -> list[str]:
     cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=since_days)).isoformat()
     output = _run_git(
         repo_root,
-        "log",
+        "rev-list",
+        "--first-parent",
+        "--reverse",
         "--since",
         cutoff,
-        "--pretty=format:%H%x1f%cI%x1f%s",
-        "--name-only",
-        "--no-renames",
         "HEAD",
     )
-    commits: list[CommitInfo] = []
-    current_hash = ""
-    current_time = ""
-    current_title = ""
-    current_files: list[str] = []
+    return [_normalize_commit_commit_hash(line) for line in output.splitlines() if line.strip()]
 
-    def flush() -> None:
-        if not current_hash:
-            return
-        related_files = tuple(path for path in current_files if _is_ci_related(path))
-        if related_files:
-            commits.append(
-                CommitInfo(
-                    commit_hash=current_hash,
-                    commit_time=current_time,
-                    commit_title=current_title,
-                    changed_files=related_files,
-                )
-            )
 
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        if "\x1f" in line:
-            flush()
-            current_hash, current_time, current_title = line.split("\x1f", 2)
-            current_files = []
-            continue
-        current_files.append(normalize_path_text(line))
-    flush()
+def _get_commit_info(repo_root: Path, commit_hash: str) -> CommitInfo:
+    payload = _run_git(repo_root, "show", "-s", "--format=%H%x1f%cI%x1f%s", commit_hash).strip()
+    commit_id, commit_time, commit_title = payload.split("\x1f", 2)
+    changed_files = _list_changed_files(repo_root, commit_hash)
+    return CommitInfo(
+        commit_hash=commit_id,
+        commit_time=commit_time,
+        commit_title=commit_title,
+        changed_files=changed_files,
+    )
+
+
+def _list_changed_files(repo_root: Path, commit_hash: str) -> tuple[str, ...]:
+    output = _run_git(repo_root, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", commit_hash)
+    return tuple(normalize_path_text(line) for line in output.splitlines() if line.strip() and _is_relevant_path(line))
+
+
+def _get_commit_sequence(repo_root: Path, since_days: int) -> list[CommitInfo]:
+    commits = [
+        _get_commit_info(repo_root, commit_hash) for commit_hash in _get_first_parent_commits(repo_root, since_days)
+    ]
     return commits
 
 
-def build_past_commit_report(repo_root: Path, config: WorkflowConfig, since_days: int, head_cases: list[dict]) -> dict:
-    """Build a past-N-days report using the current HEAD scan as the NPU baseline."""
-    commits = list_recent_commits(repo_root, since_days)
-    status_index = _build_head_status_index(head_cases)
-    details: list[dict] = []
-    seen_details: set[tuple[str, str]] = set()
-    for commit in commits:
-        cases = _collect_commit_cases(repo_root, config, commit)
-        for case in cases:
-            if not _is_effective_case(repo_root, config, case):
-                continue
-            status, npu_refs = _lookup_npu_support(case, status_index)
-            if status == "aligned":
-                continue
-            detail_key = (commit.commit_hash, case["case_id"])
-            if detail_key in seen_details:
-                continue
-            seen_details.add(detail_key)
-            details.append(
-                {
-                    "commit_hash": commit.commit_hash,
-                    "commit_time": commit.commit_time,
-                    "commit_title": commit.commit_title,
-                    "changed_files": tuple(commit.changed_files),
-                    "affected_path": case["source_path"],
-                    "source_type": case["source_type"],
-                    "case_id": case["case_id"],
-                    "case_kind": case["case_kind"],
-                    "case_name": case["display_name"],
-                    "workflow_context": f"{case['workflow_name']} / {case['job_name']} / {case['step_name']}",
-                    "line_number": case["line_number"],
-                    "npu_status": status,
-                    "npu_refs": npu_refs,
-                }
-            )
+def _get_base_commit(repo_root: Path, oldest_commit: str) -> str | None:
+    try:
+        return _run_git(repo_root, "rev-parse", f"{oldest_commit}^").strip()
+    except subprocess.CalledProcessError:
+        return None
 
-    summary = _summarize_details(details)
-    _attach_effective_changed_files(details)
+
+def _collect_relevant_tree_paths(repo_root: Path, commit_hash: str) -> list[str]:
+    output = _run_git(
+        repo_root,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        commit_hash,
+        "--",
+        ".github/workflows",
+        "tests",
+        "examples",
+    )
+    return [normalize_path_text(line) for line in output.splitlines() if line.strip() and _is_relevant_path(line)]
+
+
+def _materialize_snapshot(repo_root: Path, commit_hash: str, snapshot_root: Path) -> None:
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    for rel_path in _collect_relevant_tree_paths(repo_root, commit_hash):
+        try:
+            content = _run_git(repo_root, "show", f"{commit_hash}:{rel_path}")
+        except subprocess.CalledProcessError:
+            continue
+        target = snapshot_root / Path(rel_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", errors="ignore")
+
+
+def _load_snapshot_scan(
+    snapshot_root: Path, config: WorkflowConfig
+) -> tuple[dict[str, dict], list[dict], dict[str, list[dict]], dict[str, object]]:
+    workflow_infos, cases, _ignored_paths = collect_scan_data(snapshot_root, config)
+    grouped = build_workflow_groups(workflow_infos)
+    workflow_infos_by_path = {info.workflow_path: info for info in workflow_infos}
+    cases_by_path: dict[str, list[dict]] = defaultdict(list)
+    for case in cases:
+        cases_by_path[case["workflow_path"]].append(case)
+    return grouped, cases, cases_by_path, workflow_infos_by_path
+
+
+def build_past_commit_report(repo_root: Path, config: WorkflowConfig, since_days: int, head_cases: list[dict]) -> dict:
+    """Build a past-N-days report by comparing the base snapshot with the current HEAD snapshot."""
+    commits = _get_commit_sequence(repo_root, since_days)
+    if not commits:
+        return {
+            "repo_root": str(repo_root),
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "since_days": since_days,
+            "commit_count": 0,
+            "summary": [],
+            "workflow_changes": [],
+            "case_details": [],
+            "commit_details": [],
+        }
+
+    base_commit = _get_base_commit(repo_root, commits[0].commit_hash)
+    head_commit = _run_git(repo_root, "rev-parse", "HEAD").strip()
+
+    with tempfile.TemporaryDirectory(prefix="ascend-ci-past-") as temp_dir:
+        temp_root = Path(temp_dir)
+        base_root = temp_root / "base"
+        head_root = temp_root / "head"
+        if base_commit:
+            _materialize_snapshot(repo_root, base_commit, base_root)
+        _materialize_snapshot(repo_root, head_commit, head_root)
+
+        _base_workflow_groups, _base_cases, base_cases_by_path, base_workflow_infos = _load_snapshot_scan(
+            base_root, config
+        )
+        _head_workflow_groups, head_cases_snapshot, head_cases_by_path, head_workflow_infos = _load_snapshot_scan(
+            head_root, config
+        )
+
+    status_index = _build_head_status_index(head_cases if head_cases else head_cases_snapshot)
+    changed_files = _collect_window_changed_files(commits)
+    workflow_changes: list[dict] = []
+    case_details: list[dict] = []
+    workflow_paths = sorted(set(head_cases_by_path) | set(base_cases_by_path))
+    for workflow_path in workflow_paths:
+        head_info = head_workflow_infos.get(workflow_path)
+        base_info = base_workflow_infos.get(workflow_path)
+        head_workflow_cases = head_cases_by_path.get(workflow_path, [])
+        base_case_keys = {_case_change_key(case) for case in base_cases_by_path.get(workflow_path, [])}
+        changed_cases = _collect_changed_head_cases(head_workflow_cases, base_case_keys, changed_files)
+        if not _workflow_changed(base_info, head_info, base_case_keys, head_workflow_cases) and not changed_cases:
+            continue
+
+        touched_commits = _commits_touching_workflow(workflow_path, changed_cases, commits)
+        workflow_row = {
+            "workflow_path": workflow_path,
+            "head_workflow_name": head_info.workflow_name if head_info else "",
+            "base_workflow_name": base_info.workflow_name if base_info else "",
+            "workflow_status": _workflow_status(base_info, head_info),
+            "commit_hashes": tuple(touched_commits),
+            "case_count_head": len(head_workflow_cases),
+            "case_count_base": len(base_cases_by_path.get(workflow_path, [])),
+            "ut_gap_count": 0,
+            "st_gap_count": 0,
+        }
+
+        for case in changed_cases:
+            status, npu_refs = _lookup_npu_support(case, status_index)
+            case_detail = {
+                "workflow_path": workflow_path,
+                "workflow_name": head_info.workflow_name if head_info else case["workflow_name"],
+                "case_id": case["case_id"],
+                "case_name": case["display_name"],
+                "case_kind": case["case_kind"],
+                "command_type": case["command_type"],
+                "workflow_context": f"{case['workflow_name']} / {case['job_name']} / {case['step_name']}",
+                "line_number": case["line_number"],
+                "target": case["target"],
+                "raw_command": case["raw_command"],
+                "npu_status": status,
+                "npu_refs": npu_refs,
+                "commit_hashes": tuple(_commits_touching_case(case, commits)),
+            }
+            case_details.append(case_detail)
+            if status != "aligned":
+                if case["case_kind"] == UT_KIND:
+                    workflow_row["ut_gap_count"] += 1
+                else:
+                    workflow_row["st_gap_count"] += 1
+
+        workflow_row["cases"] = sorted(
+            case_details_for_workflow(case_details, workflow_path), key=lambda row: (row["case_kind"], row["case_name"])
+        )
+        workflow_changes.append(workflow_row)
+
+    summary = _summarize_details(case_details)
+    commit_details = _build_commit_details(commits, workflow_changes, case_details)
     return {
         "repo_root": str(repo_root),
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "since_days": since_days,
         "commit_count": len(commits),
         "summary": summary,
-        "details": sorted(
-            details,
-            key=lambda row: (
-                row["commit_time"],
-                row["commit_hash"],
-                row["case_kind"],
-                row["affected_path"],
-                row["case_name"],
-            ),
+        "workflow_changes": workflow_changes,
+        "case_details": sorted(
+            case_details, key=lambda row: (row["workflow_path"], row["case_kind"], row["case_name"])
         ),
+        "commit_details": commit_details,
     }
 
 
-def _collect_commit_cases(repo_root: Path, config: WorkflowConfig, commit: CommitInfo) -> list[dict]:
-    cases: list[dict] = []
-    for path_text in commit.changed_files:
-        if _is_workflow_path(path_text):
-            cases.extend(_collect_changed_workflow_cases(repo_root, config, commit, path_text))
+def case_details_for_workflow(case_details: list[dict], workflow_path: str) -> list[dict]:
+    return [row for row in case_details if row["workflow_path"] == workflow_path]
 
-    deduped: list[dict] = []
-    seen: set[str] = set()
-    for case in cases:
+
+def _workflow_changed(
+    base_info: object | None,
+    head_info: object | None,
+    base_case_keys: set[tuple[str, ...]],
+    head_cases: list[dict],
+) -> bool:
+    if base_info is None or head_info is None:
+        return True
+    if (
+        base_info.workflow_name != head_info.workflow_name
+        or base_info.workflow_kind != head_info.workflow_kind
+        or base_info.pair_key != head_info.pair_key
+    ):
+        return True
+    head_case_keys = {_case_change_key(case) for case in head_cases}
+    return head_case_keys != base_case_keys
+
+
+def _workflow_status(base_info: object | None, head_info: object | None) -> str:
+    if base_info is None and head_info is not None:
+        return "added"
+    if base_info is not None and head_info is None:
+        return "removed"
+    return "modified"
+
+
+def _collect_window_changed_files(commits: list[CommitInfo]) -> set[str]:
+    return {path for commit in commits for path in commit.changed_files}
+
+
+def _collect_changed_head_cases(
+    head_cases: list[dict],
+    base_case_keys: set[tuple[str, ...]],
+    changed_files: set[str],
+) -> list[dict]:
+    changed_cases: list[dict] = []
+    seen_case_ids: set[str] = set()
+    for case in head_cases:
         if case["workflow_kind"] == "npu":
             continue
-        key = case["case_id"]
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(case)
-    return deduped
-
-
-def _collect_changed_workflow_cases(
-    repo_root: Path,
-    config: WorkflowConfig,
-    commit: CommitInfo,
-    path_text: str,
-) -> list[dict]:
-    after_content = _load_git_file(repo_root, commit.commit_hash, path_text)
-    if after_content is None:
-        return []
-    after_cases = _parse_workflow_cases(repo_root, config, path_text, after_content)
-    before_content = _load_git_file(repo_root, f"{commit.commit_hash}^", path_text)
-    before_cases = _parse_workflow_cases(repo_root, config, path_text, before_content) if before_content else []
-    before_counts: dict[tuple[str, ...], int] = defaultdict(int)
-    for case in before_cases:
-        before_counts[_case_change_key(case)] += 1
-
-    changed_cases: list[dict] = []
-    after_counts: dict[tuple[str, ...], int] = defaultdict(int)
-    for case in after_cases:
-        key = _case_change_key(case)
-        after_counts[key] += 1
-        if after_counts[key] <= before_counts.get(key, 0):
-            continue
-        case["source_path"] = path_text
-        case["source_type"] = "workflow"
-        changed_cases.append(case)
+        if _case_change_key(case) not in base_case_keys or _case_target_changed(case, changed_files):
+            if case["case_id"] in seen_case_ids:
+                continue
+            seen_case_ids.add(case["case_id"])
+            changed_cases.append(case)
     return changed_cases
 
 
-def _parse_workflow_cases(
-    repo_root: Path,
-    config: WorkflowConfig,
-    path_text: str,
-    content: str,
-) -> list[dict]:
-    _workflow_info, workflow_cases = parse_workflow_content(
-        Path(path_text).name,
-        path_text,
-        content,
-        repo_root,
-        config,
-    )
-    return workflow_cases
+def _case_target_changed(case: dict, changed_files: set[str]) -> bool:
+    case_path = normalize_path_text(case["target"].split("::", 1)[0])
+    if case["workflow_path"] in changed_files:
+        return True
+    if case["command_type"] == "pytest":
+        if case_path in {"tests", "tests/"}:
+            return any(path.startswith("tests/") for path in changed_files)
+        return case_path in changed_files
+    if case["command_type"] == "bash":
+        return case_path in changed_files
+    if case["command_type"] == "torchrun":
+        return case_path in changed_files or any(path.startswith(case_path.rstrip("/") + "/") for path in changed_files)
+    return False
 
 
 def _case_change_key(case: dict) -> tuple[str, ...]:
@@ -245,11 +342,46 @@ def _case_change_key(case: dict) -> tuple[str, ...]:
     )
 
 
-def _load_git_file(repo_root: Path, commit_hash: str, path_text: str) -> str | None:
-    try:
-        return _run_git(repo_root, "show", f"{commit_hash}:{path_text}")
-    except subprocess.CalledProcessError:
-        return None
+def _commits_touching_workflow(workflow_path: str, added_cases: list[dict], commits: list[CommitInfo]) -> list[str]:
+    touched: list[str] = []
+    seen: set[str] = set()
+    for commit in commits:
+        if workflow_path in commit.changed_files:
+            if commit.commit_hash not in seen:
+                seen.add(commit.commit_hash)
+                touched.append(commit.commit_hash)
+            continue
+        if any(_commit_touches_case_path(commit, case) for case in added_cases):
+            if commit.commit_hash not in seen:
+                seen.add(commit.commit_hash)
+                touched.append(commit.commit_hash)
+    return touched
+
+
+def _commits_touching_case(case: dict, commits: list[CommitInfo]) -> list[str]:
+    touched: list[str] = []
+    seen: set[str] = set()
+    for commit in commits:
+        if _commit_touches_case_path(commit, case):
+            if commit.commit_hash not in seen:
+                seen.add(commit.commit_hash)
+                touched.append(commit.commit_hash)
+    return touched
+
+
+def _commit_touches_case_path(commit: CommitInfo, case: dict) -> bool:
+    case_path = normalize_path_text(case["target"].split("::", 1)[0])
+    if case["workflow_path"] in commit.changed_files:
+        return True
+    if case["command_type"] == "bash":
+        return case_path in commit.changed_files
+    if case["command_type"] == "torchrun":
+        return any(path.startswith(case_path.rstrip("/")) for path in commit.changed_files)
+    if case["command_type"] == "pytest":
+        if case_path in {"tests", "tests/"}:
+            return any(path.startswith("tests/") for path in commit.changed_files)
+        return case_path in commit.changed_files
+    return False
 
 
 def _build_head_status_index(head_cases: list[dict]) -> dict[str, dict[str, dict[str, tuple[str, list[dict]]]]]:
@@ -297,7 +429,7 @@ def _summarize_details(details: list[dict]) -> list[dict]:
     for row in details:
         if row["npu_status"] == "aligned":
             continue
-        key = (row["affected_path"], row["npu_status"])
+        key = (row["workflow_path"], row["npu_status"])
         if row["case_kind"] == UT_KIND:
             buckets[key]["ut_case_ids"].add(row["case_id"])
         else:
@@ -313,45 +445,32 @@ def _summarize_details(details: list[dict]) -> list[dict]:
     ]
 
 
-def _attach_effective_changed_files(details: list[dict]) -> None:
-    grouped: dict[str, list[dict]] = defaultdict(list)
-    for row in details:
-        grouped[row["commit_hash"]].append(row)
-    for commit_rows in grouped.values():
-        seen_paths: set[str] = set()
-        effective_paths: list[str] = []
-        for row in commit_rows:
-            path = row["affected_path"]
-            if path in seen_paths:
-                continue
-            seen_paths.add(path)
-            effective_paths.append(path)
-        for row in commit_rows:
-            row["effective_changed_files"] = tuple(effective_paths)
+def _build_commit_details(
+    commits: list[CommitInfo], workflow_changes: list[dict], case_details: list[dict]
+) -> list[dict]:
+    workflow_map: dict[str, list[str]] = defaultdict(list)
+    for change in workflow_changes:
+        for commit_hash in change["commit_hashes"]:
+            workflow_map[commit_hash].append(change["workflow_path"])
+    case_map: dict[str, list[str]] = defaultdict(list)
+    for detail in case_details:
+        for commit_hash in detail["commit_hashes"]:
+            case_map[commit_hash].append(detail["workflow_path"])
 
-
-def _is_effective_case(repo_root: Path, config: WorkflowConfig, case: dict) -> bool:
-    source_path = case.get("source_path", "")
-    source_type = case.get("source_type", "")
-    if source_type == "workflow":
-        content = _load_repo_file(repo_root, source_path)
-        if content is None:
-            return False
-        workflow_info, workflow_cases = parse_workflow_content(
-            Path(source_path).name, source_path, content, repo_root, config
+    rows: list[dict] = []
+    for commit in commits:
+        affected_workflows = sorted(
+            set(workflow_map.get(commit.commit_hash, []) + case_map.get(commit.commit_hash, []))
         )
-        if workflow_info is None:
-            return False
-        current_case_keys = {_case_change_key(current_case) for current_case in workflow_cases}
-        return _case_change_key(case) in current_case_keys
-    return False
-
-
-def _load_repo_file(repo_root: Path, path_text: str) -> str | None:
-    path = repo_root / path_text
-    if not path.is_file():
-        return None
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return path.read_text(encoding="utf-8", errors="ignore")
+        if not affected_workflows:
+            continue
+        rows.append(
+            {
+                "commit_hash": commit.commit_hash,
+                "commit_time": commit.commit_time,
+                "commit_title": commit.commit_title,
+                "changed_files": commit.changed_files,
+                "affected_workflows": tuple(affected_workflows),
+            }
+        )
+    return rows

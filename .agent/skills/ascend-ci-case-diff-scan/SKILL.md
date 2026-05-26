@@ -11,7 +11,7 @@ Audit Ascend CI coverage in a target `verl` repository with the scanner shipped 
 
 Use this skill when you need to compare CPU/GPU workflow test coverage with NPU workflow coverage and produce English Markdown and Excel reports. The scanner is static: it reads GitHub Actions workflow `run:` commands, preserves workflow/job/step context, and does not execute tests.
 
-The reports show ignored workflows, paired CPU/GPU and NPU workflows, UT/ST case counts, matched cases, missing cases, NPU-only cases, and manual-review cases.
+The reports show ignored workflows, paired CPU/GPU and NPU workflows, UT/ST case counts, matched cases, missing cases, NPU-only cases, and manual-review cases. When `--since-days N` is set, the scanner also emits a past-N-days report that surfaces only workflows and UT/ST cases that actually changed in the window, then checks those changes against the current HEAD NPU state.
 
 ## Instructions
 
@@ -23,6 +23,15 @@ The reports show ignored workflows, paired CPU/GPU and NPU workflows, UT/ST case
 python .agent/skills/ascend-ci-case-diff-scan/scripts/scan_ascend_ci_case_diff.py \
   --repo-root {PATH}/verl \
   --output-dir ./report/ascend-ci-case-diff-scan
+```
+
+Optional:
+
+```shell
+python .agent/skills/ascend-ci-case-diff-scan/scripts/scan_ascend_ci_case_diff.py \
+  --repo-root {PATH}/verl \
+  --output-dir ./report/ascend-ci-case-diff-scan \
+  --since-days 7
 ```
 
 ## Extraction Rules
@@ -74,6 +83,7 @@ Treat matching conservatively:
 ## Reporting
 
 The scanner writes `report.md` and `report.xlsx` to the requested output directory.
+If `--since-days` is provided, it also writes `report-past-N.md` and `report-past-N.xlsx`.
 
 The reports contain:
 
