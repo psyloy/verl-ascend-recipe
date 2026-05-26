@@ -25,10 +25,10 @@ from zipfile import ZIP_DEFLATED, ZipFile
 DEFAULT_COLUMN_WIDTH = 18
 IGNORED_WORKFLOW_WIDTHS = (70,)
 SCANNED_WORKFLOW_WIDTHS = (90, 22, 26)
-CASE_DETAIL_WIDTHS = (64, 16, 52, 14, 56, 88, 52, 14, 56, 88)
+CASE_DETAIL_WIDTHS = (64, 16, 52, 14, 56, 72, 88, 52, 14, 56, 72, 88)
 PAST_SUMMARY_WIDTHS = (42, 16, 12, 12, 12)
 PAST_WORKFLOW_WIDTHS = (48, 16, 12, 12, 12, 12, 32)
-PAST_CASE_WIDTHS = (48, 16, 46, 26, 20, 54, 18, 64, 18, 54)
+PAST_CASE_WIDTHS = (48, 16, 46, 26, 20, 54, 72, 18, 64, 18, 54)
 PAST_DETAIL_WIDTHS = (42, 24, 36, 42)
 CASE_STATUS_LABELS = (
     ("matched", "Matched"),
@@ -87,10 +87,12 @@ def _case_rows(details: dict, case_header: str) -> list[list[object]]:
             "CPU/GPU Workflow Name",
             "CPU/GPU Line Number",
             "CPU/GPU Workflow Context Name",
+            "CPU/GPU Signature",
             "CPU/GPU Full Raw Command",
             "NPU Workflow Name",
             "NPU Line Number",
             "NPU Workflow Context Name",
+            "NPU Signature",
             "NPU Full Raw Command",
         ]
     ]
@@ -120,6 +122,7 @@ def _side_cells(ref: dict | None) -> list[object]:
         ref["workflow_path"],
         ref["line_number"],
         f"{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}",
+        ref["signature"],
         ref["raw_command"],
     ]
 
@@ -345,6 +348,7 @@ def _past_case_rows(report: dict) -> list[list[object]]:
             "Target",
             "Line",
             "Workflow Context",
+            "Signature",
             "NPU Status",
             "Related Commits",
             "NPU Refs",
@@ -358,6 +362,7 @@ def _past_case_rows(report: dict) -> list[list[object]]:
             row["target"],
             row["line_number"],
             row["workflow_context"],
+            row["signature"],
             row["npu_status"],
             ", ".join(commit[:12] for commit in row["commit_hashes"]),
             _excel_multiline(

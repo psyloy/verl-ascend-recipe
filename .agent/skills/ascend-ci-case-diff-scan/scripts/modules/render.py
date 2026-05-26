@@ -20,11 +20,6 @@ from __future__ import annotations
 from itertools import zip_longest
 
 
-def markdown_multiline(value: str) -> str:
-    """Render internal multiline markers without relying on embedded HTML."""
-    return value.replace("<br>", "; ")
-
-
 def render_reference_details(indent: str, label: str, ref: dict | None) -> list[str]:
     """Render one workflow location with enough context for manual navigation."""
     lines = [f"{indent}- {label}:"]
@@ -34,6 +29,7 @@ def render_reference_details(indent: str, label: str, ref: dict | None) -> list[
     lines.append(f"{indent}  - Workflow file: `{ref['workflow_path']}`")
     lines.append(f"{indent}  - Line number: `{ref['line_number']}`")
     lines.append(f"{indent}  - Workflow context: `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}`")
+    lines.append(f"{indent}  - Signature: `{ref['signature']}`")
     lines.append(f"{indent}  - Command: `{ref['raw_command']}`")
     return lines
 
@@ -76,6 +72,30 @@ def render_case_section(title: str, items: list[dict]) -> list[str]:
     return lines
 
 
+def markdown_table_multiline(value: str) -> str:
+    """Render internal multiline markers inside Markdown table cells."""
+    return value.replace("<br>", "<br/>")
+
+
+def render_scanned_workflows(rows: list[dict]) -> list[str]:
+    """Render scanned workflow groups as a Markdown table."""
+    if not rows:
+        return ["No workflows were scanned."]
+
+    scanned_rows = [
+        [
+            markdown_table_multiline(row["workflow_name"]),
+            str(row["cpu_gpu_case_count"]),
+            str(row["npu_supported_case_count"]),
+        ]
+        for row in rows
+    ]
+    return render_table(
+        ["Workflow Name", "CPU/GPU Case Count", "NPU Supported Case Count"],
+        scanned_rows,
+    )
+
+
 def render_report(report: dict) -> str:
     """Render the final Markdown report."""
     lines = [
@@ -108,23 +128,7 @@ def render_report(report: dict) -> str:
             "",
         ]
     )
-    scanned_rows = [
-        [
-            markdown_multiline(row["workflow_name"]),
-            str(row["cpu_gpu_case_count"]),
-            str(row["npu_supported_case_count"]),
-        ]
-        for row in report["scanned_workflows"]
-    ]
-    if scanned_rows:
-        lines.extend(
-            render_table(
-                ["Workflow Name", "CPU/GPU Case Count", "NPU Supported Case Count"],
-                scanned_rows,
-            )
-        )
-    else:
-        lines.append("No workflows were scanned.")
+    lines.extend(render_scanned_workflows(report["scanned_workflows"]))
     for title, key in (("UT Case Details", "ut_details"), ("ST Case Details", "st_details")):
         lines.extend([f"## {title}", ""])
         for section_title, section_key in (
@@ -209,6 +213,7 @@ def render_past_commit_report(report: dict) -> str:
             lines.append(f"  - Workflow: `{row['workflow_path']}`")
             lines.append(f"  - Line number: `{row['line_number']}`")
             lines.append(f"  - Workflow context: `{row['workflow_context']}`")
+            lines.append(f"  - Signature: `{row['signature']}`")
             lines.append(f"  - Command: `{row['raw_command']}`")
             lines.append(f"  - NPU support: `{row['npu_status']}`")
             lines.append(f"  - Related commits: `{', '.join(commit[:12] for commit in row['commit_hashes'])}`")

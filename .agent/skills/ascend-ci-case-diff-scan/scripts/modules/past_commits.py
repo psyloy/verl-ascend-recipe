@@ -229,6 +229,7 @@ def build_past_commit_report(repo_root: Path, config: WorkflowConfig, since_days
                 "workflow_context": f"{case['workflow_name']} / {case['job_name']} / {case['step_name']}",
                 "line_number": case["line_number"],
                 "target": case["target"],
+                "signature": case["signature"],
                 "raw_command": case["raw_command"],
                 "npu_status": status,
                 "npu_refs": npu_refs,
@@ -390,8 +391,10 @@ def _commit_touches_case_path(commit: CommitInfo, case: dict) -> bool:
     return False
 
 
-def _build_head_status_index(head_cases: list[dict]) -> dict[str, dict[str, dict[str, tuple[str, list[dict]]]]]:
-    index: dict[str, dict[str, dict[str, tuple[str, list[dict]]]]] = {
+def _build_head_status_index(
+    head_cases: list[dict],
+) -> dict[str, dict[str, dict[tuple[str, str], tuple[str, list[dict]]]]]:
+    index: dict[str, dict[str, dict[tuple[str, str], tuple[str, list[dict]]]]] = {
         UT_KIND: {},
         ST_KIND: {},
     }
@@ -405,19 +408,20 @@ def _build_head_status_index(head_cases: list[dict]) -> dict[str, dict[str, dict
             pair_index = index[case_kind].setdefault(pair_key, {})
             for section_key, status in REPORT_STATUSES.items():
                 for item in details[section_key]:
-                    current = pair_index.get(item["name"])
+                    key = (item["command_type"], item["name"], item["signature"])
+                    current = pair_index.get(key)
                     if current and _status_rank(current[0]) <= _status_rank(status):
                         continue
-                    pair_index[item["name"]] = (status, item["npu_refs"])
+                    pair_index[key] = (status, item["npu_refs"])
     return index
 
 
 def _lookup_npu_support(
-    case: dict, status_index: dict[str, dict[str, dict[str, tuple[str, list[dict]]]]]
+    case: dict, status_index: dict[str, dict[str, dict[tuple[str, str], tuple[str, list[dict]]]]]
 ) -> tuple[str, list[dict]]:
     pair_key = case.get("pair_key", "")
     case_bucket = status_index.get(case["case_kind"], {}).get(pair_key, {})
-    return case_bucket.get(case["target"], ("missing_in_npu_workflows", []))
+    return case_bucket.get((case["command_type"], case["target"], case["signature"]), ("missing_in_npu_workflows", []))
 
 
 def _status_rank(status: str) -> int:

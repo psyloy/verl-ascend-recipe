@@ -38,7 +38,10 @@ RUN_RE = re.compile(r"^(\s*)run:\s*(.*)$")
 RUNS_ON_ASCEND_RE = re.compile(r"runs-on:\s+.*(?:aarch64|a2|a3)", re.IGNORECASE)
 IMAGE_ASCEND_RE = re.compile(r"image:\s+.*ascend", re.IGNORECASE)
 ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+)+")
+ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)$")
 TORCHRUN_RE = re.compile(r"\btorchrun\b")
+PYTEST_SELECTION_OPTIONS = {"-k", "-m"}
+PYTEST_IGNORED_OPTIONS = {"--ignore", "--ignore-glob"}
 
 
 def classify_workflow(file_stem: str, content: str) -> str:
@@ -64,18 +67,45 @@ def workflow_pair_key(file_stem: str) -> str:
 
 
 def normalize_signature(command: str, target: str) -> str:
-    """Keep only the command prefixes that materially affect parity matching."""
-    idx = command.find(target) if target else -1
-    env_match = ENV_PREFIX_RE.match(command[:idx] if idx != -1 else command)
-    env_prefix = env_match.group(0).strip() if env_match else ""
-    parts: list[str] = []
-    for key in ("ROLLOUT_NAME", "ENGINE", "STRATEGY", "MODE", "RESUME_MODE", "BACKEND"):
-        match = re.search(rf"{key}=([^\s]+)", env_prefix)
-        if match:
-            parts.append(match.group(0))
-    if "--nproc_per_node" in command or "--nproc-per-node" in command:
-        parts.append("torchrun-distributed")
-    return " ".join(parts).strip()
+    """Normalize the whole test command so parity matching keeps env and args aligned."""
+    tokens = tokenize_command(command)
+    if not tokens:
+        return ""
+
+    if command_uses_pytest(tokens):
+        return _normalize_pytest_signature(tokens)
+
+    return " ".join(normalize_path_text(token) for token in tokens).strip()
+
+
+def _normalize_pytest_signature(tokens: list[str]) -> str:
+    pytest_idx = tokens.index("pytest")
+    prefix_tokens = [token for token in tokens[:pytest_idx] if token not in {"export", "env"}]
+    env_prefix = sorted(normalize_path_text(token) for token in prefix_tokens if ENV_ASSIGNMENT_RE.match(token))
+
+    normalized_tokens: list[str] = []
+    normalized_tokens.extend(env_prefix)
+    normalized_tokens.append("pytest")
+
+    idx = pytest_idx + 1
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token in PYTEST_IGNORED_OPTIONS and idx + 1 < len(tokens):
+            idx += 2
+            continue
+        if token.startswith("--ignore=") or token.startswith("--ignore-glob="):
+            idx += 1
+            continue
+        if token in PYTEST_SELECTION_OPTIONS and idx + 1 < len(tokens):
+            idx += 2
+            continue
+        if token.startswith("-"):
+            normalized_tokens.append(normalize_path_text(token))
+            idx += 1
+            continue
+        idx += 1
+
+    return " ".join(normalized_tokens).strip()
 
 
 def split_shell_commands(command: str) -> list[str]:

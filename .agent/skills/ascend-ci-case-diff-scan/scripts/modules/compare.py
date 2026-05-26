@@ -33,6 +33,7 @@ def make_ref(case: dict) -> dict:
             ("job_name", "job_name"),
             ("step_name", "step_name"),
             ("line_number", "line_number"),
+            ("signature", "signature"),
             ("raw_command", "raw_command"),
         )
     }
@@ -60,6 +61,7 @@ def summarize_scanned_workflows(
         ]
         rows.append(
             {
+                "workflow_names": sorted(workflow_names) if workflow_names else [pair_key],
                 "workflow_name": "<br>".join(sorted(workflow_names)) if workflow_names else pair_key,
                 "cpu_gpu_case_count": len(cpu_gpu_case_ids),
                 "npu_supported_case_count": len(npu_case_ids),
