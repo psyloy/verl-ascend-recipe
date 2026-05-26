@@ -102,7 +102,7 @@ def _get_commit_info(repo_root: Path, commit_hash: str) -> CommitInfo:
 
 
 def _list_changed_files(repo_root: Path, commit_hash: str) -> tuple[str, ...]:
-    output = _run_git(repo_root, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", commit_hash)
+    output = _run_git(repo_root, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", commit_hash)
     return tuple(normalize_path_text(line) for line in output.splitlines() if line.strip() and _is_relevant_path(line))
 
 
@@ -402,8 +402,8 @@ def _commit_touches_case_path(commit: CommitInfo, case: dict) -> bool:
 
 def _build_head_status_index(
     head_cases: list[dict],
-) -> dict[str, dict[str, dict[tuple[str, str], tuple[str, list[dict]]]]]:
-    index: dict[str, dict[str, dict[tuple[str, str], tuple[str, list[dict]]]]] = {
+) -> dict[str, dict[str, dict[tuple[str, str, str], tuple[str, list[dict]]]]]:
+    index: dict[str, dict[str, dict[tuple[str, str, str], tuple[str, list[dict]]]]] = {
         UT_KIND: {},
         ST_KIND: {},
     }
@@ -417,16 +417,24 @@ def _build_head_status_index(
             pair_index = index[case_kind].setdefault(pair_key, {})
             for section_key, status in REPORT_STATUSES.items():
                 for item in details[section_key]:
-                    key = (item["command_type"], item["name"], item["signature"])
-                    current = pair_index.get(key)
-                    if current and _status_rank(current[0]) <= _status_rank(status):
-                        continue
-                    pair_index[key] = (status, item["npu_refs"])
+                    if section_key == "matched":
+                        key = (item["command_type"], item["name"], item["signature"])
+                        current = pair_index.get(key)
+                        if current and _status_rank(current[0]) <= _status_rank(status):
+                            continue
+                        pair_index[key] = (status, item["npu_refs"])
+                    else:
+                        for ref in item["cpu_gpu_refs"]:
+                            key = (item["command_type"], item["name"], ref["signature"])
+                            current = pair_index.get(key)
+                            if current and _status_rank(current[0]) <= _status_rank(status):
+                                continue
+                            pair_index[key] = (status, item["npu_refs"])
     return index
 
 
 def _lookup_npu_support(
-    case: dict, status_index: dict[str, dict[str, dict[tuple[str, str], tuple[str, list[dict]]]]]
+    case: dict, status_index: dict[str, dict[str, dict[tuple[str, str, str], tuple[str, list[dict]]]]]
 ) -> tuple[str, list[dict]]:
     pair_key = case.get("pair_key", "")
     case_bucket = status_index.get(case["case_kind"], {}).get(pair_key, {})
