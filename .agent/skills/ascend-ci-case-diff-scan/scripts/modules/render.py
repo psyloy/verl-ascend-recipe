@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2025 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ def render_reference_details(indent: str, label: str, ref: dict | None) -> list[
     lines.append(f"{indent}  - Workflow file: `{ref['workflow_path']}`")
     lines.append(f"{indent}  - Line number: `{ref['line_number']}`")
     lines.append(f"{indent}  - Workflow context: `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}`")
+    lines.append(f"{indent}  - Signature: `{ref['signature']}`")
     lines.append(f"{indent}  - Command: `{ref['raw_command']}`")
     return lines
 
@@ -71,6 +72,30 @@ def render_case_section(title: str, items: list[dict]) -> list[str]:
     return lines
 
 
+def markdown_table_multiline(value: str) -> str:
+    """Render internal multiline markers inside Markdown table cells."""
+    return value.replace("<br>", "<br/>")
+
+
+def render_scanned_workflows(rows: list[dict]) -> list[str]:
+    """Render scanned workflow groups as a Markdown table."""
+    if not rows:
+        return ["No workflows were scanned."]
+
+    scanned_rows = [
+        [
+            markdown_table_multiline(row["workflow_name"]),
+            str(row["cpu_gpu_case_count"]),
+            str(row["npu_supported_case_count"]),
+        ]
+        for row in rows
+    ]
+    return render_table(
+        ["Workflow Name", "CPU/GPU Case Count", "NPU Supported Case Count"],
+        scanned_rows,
+    )
+
+
 def render_report(report: dict) -> str:
     """Render the final Markdown report."""
     lines = [
@@ -103,23 +128,7 @@ def render_report(report: dict) -> str:
             "",
         ]
     )
-    scanned_rows = [
-        [
-            row["workflow_name"],
-            str(row["cpu_gpu_case_count"]),
-            str(row["npu_supported_case_count"]),
-        ]
-        for row in report["scanned_workflows"]
-    ]
-    if scanned_rows:
-        lines.extend(
-            render_table(
-                ["Workflow Name", "CPU/GPU Case Count", "NPU Supported Case Count"],
-                scanned_rows,
-            )
-        )
-    else:
-        lines.append("No workflows were scanned.")
+    lines.extend(render_scanned_workflows(report["scanned_workflows"]))
     for title, key in (("UT Case Details", "ut_details"), ("ST Case Details", "st_details")):
         lines.extend([f"## {title}", ""])
         for section_title, section_key in (
@@ -129,4 +138,111 @@ def render_report(report: dict) -> str:
             ("Manual Review", "manual_review"),
         ):
             lines.extend(render_case_section(section_title, report[key][section_key]))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_past_commit_report(report: dict) -> str:
+    """Render the past-N-days commit analysis as Markdown."""
+    lines = [
+        "# Ascend CI Past N Days Commit Analysis",
+        "",
+        f"Repository: `{report['repo_root']}`",
+        f"Window: past `{report['since_days']}` days",
+        f"Commits scanned: `{report['commit_count']}`",
+        "",
+        "## Summary",
+        "",
+    ]
+    summary_rows = [
+        [
+            row["affected_path"],
+            str(row["ut_gap_count"]),
+            str(row["st_gap_count"]),
+        ]
+        for row in report["summary"]
+    ]
+    if summary_rows:
+        lines.extend(
+            render_table(
+                [
+                    "CPU/GPU and NPU Not Fully Aligned Cases",
+                    "UT Not Fully Aligned with NPU Count",
+                    "ST Not Fully Aligned with NPU Count",
+                ],
+                summary_rows,
+            )
+        )
+    else:
+        lines.append("No changed CPU/GPU workflow cases are missing or divergent on NPU in the selected window.")
+
+    lines.extend(["", "## Changed Workflows", ""])
+    workflow_rows = [
+        [
+            row["workflow_path"],
+            row["workflow_status"],
+            str(row["case_count_base"]),
+            str(row["case_count_head"]),
+            str(row["ut_gap_count"]),
+            str(row["st_gap_count"]),
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+        ]
+        for row in report["workflow_changes"]
+    ]
+    if workflow_rows:
+        lines.extend(
+            render_table(
+                [
+                    "Workflow",
+                    "Change",
+                    "Window Start Case Count",
+                    "Current HEAD Case Count",
+                    "UT Not Fully Aligned with NPU Count",
+                    "ST Not Fully Aligned with NPU Count",
+                    "Related Commits",
+                ],
+                workflow_rows,
+            )
+        )
+    else:
+        lines.append("No effective workflow or workflow-referenced UT/ST changes were found in the selected window.")
+
+    lines.extend(["", "## Changed Case Details", ""])
+    case_details = report["case_details"]
+    if not case_details:
+        lines.append("- None")
+    else:
+        for row in case_details:
+            lines.append(f"- Case: `{row['case_name']}`")
+            lines.append(f"  - Kind: `{row['case_kind']}`")
+            lines.append(f"  - Workflow: `{row['workflow_path']}`")
+            lines.append(f"  - Line number: `{row['line_number']}`")
+            lines.append(f"  - Workflow context: `{row['workflow_context']}`")
+            lines.append(f"  - Signature: `{row['signature']}`")
+            lines.append(f"  - Command: `{row['raw_command']}`")
+            lines.append(f"  - NPU support: `{row['npu_status']}`")
+            lines.append(f"  - Related commits: `{', '.join(commit[:12] for commit in row['commit_hashes'])}`")
+            if row["npu_refs"]:
+                lines.append("  - NPU refs:")
+                for ref in row["npu_refs"]:
+                    lines.append(
+                        f"    - `{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}` "
+                        f"`{ref['workflow_path']}` line `{ref['line_number']}`"
+                    )
+            else:
+                lines.append("  - NPU refs: None")
+
+    lines.extend(["", "## Commit Details", ""])
+    commit_details = report["commit_details"]
+    if not commit_details:
+        lines.append("- None")
+    else:
+        for row in commit_details:
+            lines.append(f"- Commit `{row['commit_hash']}` - {row['commit_title']}")
+            lines.append(f"  - Time: `{row['commit_time']}`")
+            lines.append("  - Changed files:")
+            for changed_file in row["changed_files"]:
+                lines.append(f"    - `{changed_file}`")
+            lines.append("  - Effective workflows:")
+            for workflow_path in row["affected_workflows"]:
+                lines.append(f"    - `{workflow_path}`")
     return "\n".join(lines).rstrip() + "\n"

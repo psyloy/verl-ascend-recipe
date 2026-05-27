@@ -45,3 +45,11 @@ Recognize only workflow commands that visibly execute tests:
 - Same target with materially different env or argument prefixes should usually become `manual_review_needed`.
 - Repeated commands should remain distinct when they appear in different workflow, job, or step contexts.
 - For UT, prefer function-level or test-method-level comparison over file-level comparison because broad `pytest tests/...` commands and `--ignore-glob` options can hide partial support.
+
+## Past-N-days expectations
+
+- The past-N-days report is scoped to effective final-state changes between the window-start snapshot and current `HEAD`.
+- Commits that add or modify a case and are later reverted or removed in the same window should not appear as changed cases.
+- The changed-workflow table is CPU/GPU oriented. NPU workflows should appear as support references for changed CPU/GPU cases, not as primary changed workflow rows.
+- `UT/ST Not Fully Aligned with NPU Count` covers changed CPU/GPU cases whose current `HEAD` NPU state is either missing or divergent enough to require manual review.
+- Direct changes to `tests/**` or `examples/**/*.sh` are relevant only when they are reachable from an extracted workflow case.

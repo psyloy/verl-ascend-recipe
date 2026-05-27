@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2025 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ def make_ref(case: dict) -> dict:
             ("job_name", "job_name"),
             ("step_name", "step_name"),
             ("line_number", "line_number"),
+            ("signature", "signature"),
             ("raw_command", "raw_command"),
         )
     }
@@ -60,6 +61,7 @@ def summarize_scanned_workflows(
         ]
         rows.append(
             {
+                "workflow_names": sorted(workflow_names) if workflow_names else [pair_key],
                 "workflow_name": "<br>".join(sorted(workflow_names)) if workflow_names else pair_key,
                 "cpu_gpu_case_count": len(cpu_gpu_case_ids),
                 "npu_supported_case_count": len(npu_case_ids),

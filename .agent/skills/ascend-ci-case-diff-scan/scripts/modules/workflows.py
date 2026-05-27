@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2025 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,7 +38,10 @@ RUN_RE = re.compile(r"^(\s*)run:\s*(.*)$")
 RUNS_ON_ASCEND_RE = re.compile(r"runs-on:\s+.*(?:aarch64|a2|a3)", re.IGNORECASE)
 IMAGE_ASCEND_RE = re.compile(r"image:\s+.*ascend", re.IGNORECASE)
 ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+)+")
+ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)$")
 TORCHRUN_RE = re.compile(r"\btorchrun\b")
+PYTEST_SELECTION_OPTIONS = {"-k", "-m"}
+PYTEST_IGNORED_OPTIONS = {"--ignore", "--ignore-glob"}
 
 
 def classify_workflow(file_stem: str, content: str) -> str:
@@ -64,18 +67,45 @@ def workflow_pair_key(file_stem: str) -> str:
 
 
 def normalize_signature(command: str, target: str) -> str:
-    """Keep only the command prefixes that materially affect parity matching."""
-    idx = command.find(target) if target else -1
-    env_match = ENV_PREFIX_RE.match(command[:idx] if idx != -1 else command)
-    env_prefix = env_match.group(0).strip() if env_match else ""
-    parts: list[str] = []
-    for key in ("ROLLOUT_NAME", "ENGINE", "STRATEGY", "MODE", "RESUME_MODE", "BACKEND"):
-        match = re.search(rf"{key}=([^\s]+)", env_prefix)
-        if match:
-            parts.append(match.group(0))
-    if "--nproc_per_node" in command or "--nproc-per-node" in command:
-        parts.append("torchrun-distributed")
-    return " ".join(parts).strip()
+    """Normalize the whole test command so parity matching keeps env and args aligned."""
+    tokens = tokenize_command(command)
+    if not tokens:
+        return ""
+
+    if command_uses_pytest(tokens):
+        return _normalize_pytest_signature(tokens)
+
+    return " ".join(normalize_path_text(token) for token in tokens).strip()
+
+
+def _normalize_pytest_signature(tokens: list[str]) -> str:
+    pytest_idx = tokens.index("pytest")
+    prefix_tokens = [token for token in tokens[:pytest_idx] if token not in {"export", "env"}]
+    env_prefix = sorted(normalize_path_text(token) for token in prefix_tokens if ENV_ASSIGNMENT_RE.match(token))
+
+    normalized_tokens: list[str] = []
+    normalized_tokens.extend(env_prefix)
+    normalized_tokens.append("pytest")
+
+    idx = pytest_idx + 1
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token in PYTEST_IGNORED_OPTIONS and idx + 1 < len(tokens):
+            idx += 2
+            continue
+        if token.startswith("--ignore=") or token.startswith("--ignore-glob="):
+            idx += 1
+            continue
+        if token in PYTEST_SELECTION_OPTIONS and idx + 1 < len(tokens):
+            idx += 2
+            continue
+        if token.startswith("-"):
+            normalized_tokens.append(normalize_path_text(token))
+            idx += 1
+            continue
+        idx += 1
+
+    return " ".join(normalized_tokens).strip()
 
 
 def split_shell_commands(command: str) -> list[str]:
@@ -301,24 +331,29 @@ def _extract_cases_from_command(
     return deduped
 
 
-def parse_workflow(path: Path, repo_root: Path, config: WorkflowConfig) -> tuple[WorkflowInfo | None, list[dict]]:
-    """Parse one workflow file and extract test cases from each run block."""
-    file_name = path.name
+def parse_workflow_content(
+    file_name: str,
+    workflow_path: str,
+    content: str,
+    repo_root: Path,
+    config: WorkflowConfig,
+) -> tuple[WorkflowInfo | None, list[dict]]:
+    """Parse one workflow content string and extract test cases from each run block."""
     if is_ignored_workflow(file_name, config):
         return None, []
 
-    content = load_text(path)
-    workflow_name = path.stem
+    file_stem = Path(file_name).stem
+    workflow_name = file_stem
     name_match = WORKFLOW_NAME_RE.search(content)
     if name_match:
         workflow_name = name_match.group(1).strip().strip("\"'")
-    workflow_kind = classify_workflow(path.stem, content)
+    workflow_kind = classify_workflow(file_stem, content)
     workflow_info = WorkflowInfo(
         workflow_name=workflow_name,
-        workflow_path=normalize_path_text(path.relative_to(repo_root).as_posix()),
+        workflow_path=normalize_path_text(workflow_path),
         file_name=file_name,
         workflow_kind=workflow_kind,
-        pair_key=workflow_pair_key(path.stem),
+        pair_key=workflow_pair_key(file_stem),
     )
 
     lines = content.splitlines()
@@ -356,6 +391,13 @@ def parse_workflow(path: Path, repo_root: Path, config: WorkflowConfig) -> tuple
             continue
         idx += 1
     return workflow_info, cases
+
+
+def parse_workflow(path: Path, repo_root: Path, config: WorkflowConfig) -> tuple[WorkflowInfo | None, list[dict]]:
+    """Parse one workflow file and extract test cases from each run block."""
+    file_name = path.name
+    rel_path = normalize_path_text(path.relative_to(repo_root).as_posix())
+    return parse_workflow_content(file_name, rel_path, load_text(path), repo_root, config)
 
 
 def collect_scan_data(repo_root: Path, config: WorkflowConfig) -> tuple[list[WorkflowInfo], list[dict], list[str]]:

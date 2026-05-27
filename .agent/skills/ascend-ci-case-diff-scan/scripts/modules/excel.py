@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2025 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 DEFAULT_COLUMN_WIDTH = 18
 IGNORED_WORKFLOW_WIDTHS = (70,)
 SCANNED_WORKFLOW_WIDTHS = (90, 22, 26)
-CASE_DETAIL_WIDTHS = (64, 16, 52, 14, 56, 88, 52, 14, 56, 88)
+CASE_DETAIL_WIDTHS = (64, 16, 52, 14, 56, 72, 88, 52, 14, 56, 72, 88)
+PAST_SUMMARY_WIDTHS = (42, 16, 12, 12, 12)
+PAST_WORKFLOW_WIDTHS = (48, 16, 12, 12, 12, 12, 32)
+PAST_CASE_WIDTHS = (48, 16, 46, 26, 20, 54, 72, 18, 64, 18, 54)
+PAST_DETAIL_WIDTHS = (42, 24, 36, 42)
 CASE_STATUS_LABELS = (
     ("matched", "Matched"),
     ("cpu_gpu_only", "CPU/GPU Only"),
@@ -41,6 +45,17 @@ def write_excel_report(path: Path, report: dict) -> None:
         ("Scanned Workflows", _scanned_workflow_rows(report), SCANNED_WORKFLOW_WIDTHS),
         ("UT Cases", _case_rows(report["ut_details"], "UT Case Name"), CASE_DETAIL_WIDTHS),
         ("ST Cases", _case_rows(report["st_details"], "ST Case Name"), CASE_DETAIL_WIDTHS),
+    ]
+    _write_workbook(path, sheets)
+
+
+def write_past_commit_excel_report(path: Path, report: dict) -> None:
+    """Write the past-N-days report as a minimal XLSX workbook."""
+    sheets = [
+        ("Summary", _past_summary_rows(report), PAST_SUMMARY_WIDTHS),
+        ("Changed Workflows", _past_workflow_rows(report), PAST_WORKFLOW_WIDTHS),
+        ("Changed Cases", _past_case_rows(report), PAST_CASE_WIDTHS),
+        ("Commit Details", _past_detail_rows(report), PAST_DETAIL_WIDTHS),
     ]
     _write_workbook(path, sheets)
 
@@ -72,10 +87,12 @@ def _case_rows(details: dict, case_header: str) -> list[list[object]]:
             "CPU/GPU Workflow Name",
             "CPU/GPU Line Number",
             "CPU/GPU Workflow Context Name",
+            "CPU/GPU Signature",
             "CPU/GPU Full Raw Command",
             "NPU Workflow Name",
             "NPU Line Number",
             "NPU Workflow Context Name",
+            "NPU Signature",
             "NPU Full Raw Command",
         ]
     ]
@@ -100,11 +117,12 @@ def _ref_sort_key(ref: dict) -> tuple[object, ...]:
 
 def _side_cells(ref: dict | None) -> list[object]:
     if not ref:
-        return ["", "", "", ""]
+        return ["", "", "", "", ""]
     return [
         ref["workflow_path"],
         ref["line_number"],
         f"{ref['workflow_name']} / {ref['job_name']} / {ref['step_name']}",
+        ref["signature"],
         ref["raw_command"],
     ]
 
@@ -277,6 +295,118 @@ def _excel_multiline(value: str) -> str:
 def _xml_text(value: str) -> str:
     cleaned = "".join(character for character in value if _is_valid_xml_char(character))
     return escape(cleaned)
+
+
+def _past_summary_rows(report: dict) -> list[list[object]]:
+    rows = [
+        [
+            "Workflow",
+            "UT Not Fully Aligned with NPU Count",
+            "ST Not Fully Aligned with NPU Count",
+            "Change Count",
+            "Related Commits",
+        ]
+    ]
+    rows.extend(
+        [
+            row["workflow_path"],
+            row["ut_gap_count"],
+            row["st_gap_count"],
+            len(row["commit_hashes"]),
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+        ]
+        for row in report["workflow_changes"]
+    )
+    return rows
+
+
+def _past_workflow_rows(report: dict) -> list[list[object]]:
+    rows = [
+        [
+            "Workflow",
+            "Change",
+            "Window Start Cases",
+            "Current HEAD Cases",
+            "UT Not Fully Aligned with NPU",
+            "ST Not Fully Aligned with NPU",
+            "Related Commits",
+        ]
+    ]
+    rows.extend(
+        [
+            row["workflow_path"],
+            row["workflow_status"],
+            row["case_count_base"],
+            row["case_count_head"],
+            row["ut_gap_count"],
+            row["st_gap_count"],
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+        ]
+        for row in report["workflow_changes"]
+    )
+    return rows
+
+
+def _past_case_rows(report: dict) -> list[list[object]]:
+    rows = [
+        [
+            "Workflow",
+            "Case Name",
+            "Kind",
+            "Target",
+            "Line",
+            "Workflow Context",
+            "Signature",
+            "NPU Status",
+            "Related Commits",
+            "NPU Refs",
+        ]
+    ]
+    rows.extend(
+        [
+            row["workflow_path"],
+            row["case_name"],
+            row["case_kind"],
+            row["target"],
+            row["line_number"],
+            row["workflow_context"],
+            row["signature"],
+            row["npu_status"],
+            ", ".join(commit[:12] for commit in row["commit_hashes"]),
+            _excel_multiline(
+                "\n".join(
+                    f"{ref['workflow_name']} / {ref['job_name']} / "
+                    f"{ref['step_name']} {ref['workflow_path']}:{ref['line_number']}"
+                    for ref in row["npu_refs"]
+                )
+            )
+            if row["npu_refs"]
+            else "",
+        ]
+        for row in report["case_details"]
+    )
+    return rows
+
+
+def _past_detail_rows(report: dict) -> list[list[object]]:
+    rows = [
+        [
+            "Commit Hash",
+            "Commit Time",
+            "Commit Title",
+            "Affected Workflows",
+        ]
+    ]
+    for row in report["commit_details"]:
+        rows.append(
+            [
+                row["commit_hash"],
+                row["commit_time"],
+                row["commit_title"],
+                _excel_multiline("\n".join(row["affected_workflows"])),
+            ]
+        )
+    return rows
 
 
 def _is_valid_xml_char(character: str) -> bool:

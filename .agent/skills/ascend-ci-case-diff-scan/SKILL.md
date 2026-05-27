@@ -11,7 +11,7 @@ Audit Ascend CI coverage in a target `verl` repository with the scanner shipped 
 
 Use this skill when you need to compare CPU/GPU workflow test coverage with NPU workflow coverage and produce English Markdown and Excel reports. The scanner is static: it reads GitHub Actions workflow `run:` commands, preserves workflow/job/step context, and does not execute tests.
 
-The reports show ignored workflows, paired CPU/GPU and NPU workflows, UT/ST case counts, matched cases, missing cases, NPU-only cases, and manual-review cases.
+The full reports show ignored workflows, paired CPU/GPU and NPU workflows, UT/ST case counts, matched cases, missing cases, NPU-only cases, and manual-review cases. When `--since-days N` is set, the scanner also emits a past-N-days report that surfaces only CPU/GPU workflows and UT/ST cases with effective changes in the selected window, then checks those changed cases against the current HEAD NPU support evidence.
 
 ## Instructions
 
@@ -24,6 +24,17 @@ python .agent/skills/ascend-ci-case-diff-scan/scripts/scan_ascend_ci_case_diff.p
   --repo-root {PATH}/verl \
   --output-dir ./report/ascend-ci-case-diff-scan
 ```
+
+Optional:
+
+```shell
+python .agent/skills/ascend-ci-case-diff-scan/scripts/scan_ascend_ci_case_diff.py \
+  --repo-root {PATH}/verl \
+  --output-dir ./report/ascend-ci-case-diff-scan \
+  --since-days 7
+```
+
+`--since-days` must be a positive integer. If it is omitted, only the full report is generated.
 
 ## Extraction Rules
 
@@ -47,6 +58,29 @@ For each extracted case, preserve:
 When the same command is repeated, keep cases distinct by `workflow_name`, `job_name`, and `step_name`.
 For UT expansion, treat Python test functions and `Test*::test_*` methods as the reporting unit whenever the target file can be parsed.
 For ST scripts, record only scripts explicitly invoked by the workflow step; do not inspect the script body for nested commands.
+
+Case matching uses `command_type`, `target`, and `signature`.
+
+- `bash` and `torchrun` signatures are strict command-level signatures. Environment assignments and command arguments are part of the test semantics.
+- `pytest` signatures keep execution semantics while avoiding false differences from broad discovery selectors. Function-level UT alignment is decided from the expanded concrete test path plus the retained execution signature.
+- Same target with a materially different retained signature is not treated as aligned.
+
+## Past-N-Days Analysis
+
+When `--since-days N` is set, the scanner:
+
+- walks the current branch first-parent history for commits merged in the last `N` days
+- compares the window-start snapshot with current `HEAD`
+- keeps only effective final-state changes, so additions that were later removed or reverted are not reported as changed cases
+- starts from CPU/GPU workflows and their referenced UT/ST cases, matching the full-scan workflow-first model
+- uses NPU workflows only as current `HEAD` support evidence, not as rows in `Changed Workflows`
+
+The past report columns should be read as:
+
+- `Window Start Case Count`: extracted cases in that CPU/GPU workflow at the start of the window
+- `Current HEAD Case Count`: extracted cases in that CPU/GPU workflow at current `HEAD`
+- `UT/ST Not Fully Aligned with NPU Count`: changed CPU/GPU UT/ST cases whose current `HEAD` NPU status is not fully aligned, including missing and manual-review cases
+- `Related Commits`: commits in the selected window that touched the workflow or the changed case target
 
 ## Boundaries
 
@@ -74,6 +108,7 @@ Treat matching conservatively:
 ## Reporting
 
 The scanner writes `report.md` and `report.xlsx` to the requested output directory.
+If `--since-days` is provided, it also writes `report-past-N.md` and `report-past-N.xlsx`.
 
 The reports contain:
 
