@@ -110,11 +110,8 @@ def extract_bash_target(tokens: list[str]) -> str | None:
     """Extract bash-invoked test scripts from explicit workflow step commands."""
     for idx, token in enumerate(tokens[:-1]):
         if token == "bash":
-            lookahead = idx + 1
-            while lookahead < len(tokens) and tokens[lookahead].startswith("-"):
-                lookahead += 1
-            if lookahead < len(tokens):
-                target = normalize_path_text(tokens[lookahead].strip("\"'"))
+            for j in range(idx + 1, len(tokens)):
+                target = normalize_path_text(tokens[j].strip("\"'"))
                 if target.startswith(("tests/", "examples/")) and target.endswith(".sh"):
                     return target
     return None
