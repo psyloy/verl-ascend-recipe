@@ -44,7 +44,7 @@ class WorkflowInfo:
 
 def load_text(path: Path) -> str:
     """Read text with a small encoding fallback chain for local repos."""
-    for encoding in ("utf-8", "utf-8-sig", "gb18030", "latin-1"):
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "latin-1"):
         try:
             return path.read_text(encoding=encoding)
         except UnicodeDecodeError:
