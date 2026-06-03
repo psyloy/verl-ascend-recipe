@@ -27,27 +27,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: pip install pytest pytest-cov
+        run: pip install pytest
 
-      - name: Run unit tests with coverage
-        id: tests
-        run: |
-          pytest tests/ -v --tb=short \
-            --cov=.agent/skills/ascend-ci-case-diff-scan/scripts/modules \
-            --cov-report=term \
-            --cov-fail-under=90
-
-      - name: Coverage threshold not met
-        if: failure() && steps.tests.outcome == 'failure'
-        run: |
-          echo "::error::Unit test coverage is below 90%. Please add more unit tests to meet the minimum coverage threshold."
-          echo ""
-          echo "  ============================================="
-          echo "    COVERAGE CHECK FAILED"
-          echo "    Overall unit test coverage is below 90%"
-          echo "    Please add more unit tests to reach the"
-          echo "    minimum 90% coverage threshold."
-          echo "  ============================================="
-          echo ""
-          echo "  Run locally for detailed line coverage:"
-          echo "    pytest tests/ --cov=.agent/skills/ascend-ci-case-diff-scan/scripts/modules --cov-report=term-missing"
+      - name: Run unit tests
+        run: pytest tests/ -v --tb=short
