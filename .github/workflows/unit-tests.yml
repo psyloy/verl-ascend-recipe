@@ -18,17 +18,13 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.10
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.10"
 
       - name: Install dependencies
         run: pip install pytest
@@ -69,9 +65,9 @@ jobs:
           echo "total=$TOTAL" >> $GITHUB_OUTPUT
           echo "pass_rate=$PASS_RATE" >> $GITHUB_OUTPUT
 
-          # Write per-version summary to job's step summary
+          # Write summary to job's step summary
           {
-            echo "## Unit Test Results (Python ${{ matrix.python-version }})"
+            echo "## Unit Test Results (Python 3.10)"
             echo
             echo "| Total | Passed | Failed | Errors | Pass Rate |"
             echo "|-------|--------|--------|--------|-----------|"
@@ -82,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-py${{ matrix.python-version }}
+          name: test-results
           path: |
             pytest-output.txt
           retention-days: 1
@@ -93,77 +89,56 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      issues: write
     steps:
-      - name: Download all test result artifacts
+      - name: Download test result artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: test-results-py*
+          name: test-results
 
-      - name: Aggregate results and comment on PR
+      - name: Post results comment on PR
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // Collect results from each Python version artifact
-            const results = [];
-            const pythonVersions = ["3.10", "3.11", "3.12"];
+            const fs = require("fs");
 
-            for (const py of pythonVersions) {
-              const artifactDir = `test-results-py${py}`;
-              const fs = require("fs");
-              const path = require("path");
+            let passed = 0, failed = 0, errors = 0, total = 0;
+            let passRate = "0.0";
+            let summary = "N/A";
 
-              const outputFile = path.join(artifactDir, "pytest-output.txt");
-              let passed = 0, failed = 0, errors = 0, total = 0;
-              let passRate = "0.0";
-              let summary = "N/A";
+            try {
+              const content = fs.readFileSync("pytest-output.txt", "utf8");
+              const lines = content.split("\n");
+              const summaryLine = lines.reverse().find(l => /^=+.*=+$/.test(l)) || "";
 
-              try {
-                const content = fs.readFileSync(outputFile, "utf8");
-                // Find the pytest summary line
-                const lines = content.split("\n");
-                const summaryLine = lines.reverse().find(l => /^=+.*=+$/.test(l)) || "";
+              const passedMatch = summaryLine.match(/(\d+)\s*passed/);
+              const failedMatch = summaryLine.match(/(\d+)\s*failed/);
+              const errorMatch = summaryLine.match(/(\d+)\s*errors?/);
 
-                const passedMatch = summaryLine.match(/(\d+)\s*passed/);
-                const failedMatch = summaryLine.match(/(\d+)\s*failed/);
-                const errorMatch = summaryLine.match(/(\d+)\s*errors?/);
+              passed = passedMatch ? parseInt(passedMatch[1]) : 0;
+              failed = failedMatch ? parseInt(failedMatch[1]) : 0;
+              errors = errorMatch ? parseInt(errorMatch[1]) : 0;
+              total = passed + failed + errors;
 
-                passed = passedMatch ? parseInt(passedMatch[1]) : 0;
-                failed = failedMatch ? parseInt(failedMatch[1]) : 0;
-                errors = errorMatch ? parseInt(errorMatch[1]) : 0;
-                total = passed + failed + errors;
-
-                if (total > 0) {
-                  passRate = ((passed / total) * 100).toFixed(1);
-                }
-                summary = summaryLine.trim() || "N/A";
-              } catch (e) {
-                summary = `Artifact not found: ${e.message}`;
+              if (total > 0) {
+                passRate = ((passed / total) * 100).toFixed(1);
               }
-
-              results.push({ py, passed, failed, errors, total, passRate, summary });
+              summary = summaryLine.trim() || "N/A";
+            } catch (e) {
+              summary = `Artifact not found: ${e.message}`;
             }
 
-            // Build markdown table
-            const statusIcon = (rate) => parseFloat(rate) === 100 ? "✅" : parseFloat(rate) >= 90 ? "⚠️" : "❌";
+            const pct = parseFloat(passRate);
+            const icon = pct === 100 ? "✅" : pct >= 90 ? "⚠️" : "❌";
 
             let body = "## 🤖 Unit Test Results\n\n";
-            body += "| Python | Passed | Failed | Errors | Pass Rate |\n";
-            body += "|--------|--------|--------|--------|-----------|\n";
-
-            for (const r of results) {
-              body += `| ${r.py} | ${r.passed} | ${r.failed} | ${r.errors} | ${r.passRate}% ${statusIcon(r.passRate)} |\n`;
-            }
-
+            body += "| Total | Passed | Failed | Errors | Pass Rate |\n";
+            body += "|-------|--------|--------|--------|-----------|\n";
+            body += `| ${total} | ${passed} | ${failed} | ${errors} | ${passRate}% ${icon} |\n`;
             body += "\n---\n";
-            body += `<details><summary>📋 Summary</summary>\n\n`;
-            for (const r of results) {
-              body += `- **Python ${r.py}**: ${r.summary}\n`;
-            }
-            body += `</details>`;
+            body += `<details><summary>📋 Summary</summary>\n\n${summary}\n</details>`;
 
-            // Post as a new comment (not update existing)
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
