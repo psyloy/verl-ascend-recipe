@@ -133,16 +133,23 @@ class TestLoadText:
         result = load_text(path)
         assert result == "café"
 
-    def test_fallback_ignore(self, tmp_path):
+    def test_fallback_latin1(self, tmp_path):
+        """Bytes invalid in utf-8/utf-8-sig/gb18030 but valid in latin-1 fall through to latin-1.
+
+        Latin-1 maps every byte 0x00-0xFF to a character, so any arbitrary byte sequence
+        will be decoded by this fallback. The final ``errors="ignore"`` fallback is a
+        safety net that is unreachable with normal byte sequences.
+        """
         from modules.config import load_text
 
         path = tmp_path / "test_bad.bin"
         # Write raw bytes that are invalid in utf-8 but valid in latin-1
         path.write_bytes(b"\xff\xfe\xfd")
         result = load_text(path)
-        # Fallback should return something (possibly with replacement chars)
         assert isinstance(result, str)
         assert len(result) > 0
+        # Latin-1 maps \xff → ÿ, \xfe → þ, \xfd → ý
+        assert result == "ÿþý"
 
     def test_empty_file(self, tmp_path):
         from modules.config import load_text

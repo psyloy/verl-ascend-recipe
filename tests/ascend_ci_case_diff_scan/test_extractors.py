@@ -270,6 +270,58 @@ class TestIsIgnoredPytestTarget:
 
         assert is_ignored_pytest_target("tests\\skip.py", ["tests/skip.py"], []) is True
 
+    def test_directory_glob_match(self):
+        """Glob patterns without wildcards match as directory prefixes (pytest behavior)."""
+        from modules.extractors import is_ignored_pytest_target
+
+        # Same as --ignore-glob="tests/checkpoint_engine" — should exclude all files under it.
+        assert (
+            is_ignored_pytest_target("tests/checkpoint_engine/test_correctness.py", [], ["tests/checkpoint_engine"])
+            is True
+        )
+        assert is_ignored_pytest_target("tests/checkpoint_engine/sub/test.py", [], ["tests/checkpoint_engine"]) is True
+
+    def test_directory_glob_with_trailing_slash(self):
+        """Glob patterns with trailing slash also match as directory prefixes."""
+        from modules.extractors import is_ignored_pytest_target
+
+        # --ignore-glob="tests/models/" should exclude all files under tests/models/
+        assert is_ignored_pytest_target("tests/models/test_fsdp.py", [], ["tests/models/"]) is True
+        assert is_ignored_pytest_target("tests/models/sub/module.py", [], ["tests/models/"]) is True
+
+    def test_directory_glob_exact_match(self):
+        """A directory glob pattern also matches the path exactly (a file at that path)."""
+        from modules.extractors import is_ignored_pytest_target
+
+        assert is_ignored_pytest_target("tests/skip.py", [], ["tests/skip.py"]) is True
+
+    def test_directory_glob_no_match(self):
+        """Directory glob patterns only match files at or under the named path."""
+        from modules.extractors import is_ignored_pytest_target
+
+        assert is_ignored_pytest_target("tests/other/file.py", [], ["tests/checkpoint_engine"]) is False
+        assert is_ignored_pytest_target("tests/model_utils.py", [], ["tests/models/"]) is False
+
+    def test_wildcard_glob_still_works(self):
+        """Patterns with wildcards still use fnmatch behavior."""
+        from modules.extractors import is_ignored_pytest_target
+
+        assert is_ignored_pytest_target("tests/deprecated/test_old.py", [], ["tests/deprecated/*"]) is True
+        assert is_ignored_pytest_target("tests/deprecated/test_old.py", [], ["tests/*/deprecated/*"]) is False
+        assert is_ignored_pytest_target("tests/special_e2e/foo.py", [], ["tests/special*"]) is True
+        assert is_ignored_pytest_target("tests/test_on_npu.py", [], ["*on_npu.py"]) is True
+
+    def test_mixed_ignore_paths_and_globs(self):
+        """Both ignore_paths and ignore_globs are checked."""
+        from modules.extractors import is_ignored_pytest_target
+
+        # Matched by ignore_paths
+        assert is_ignored_pytest_target("tests/skip.py", ["tests/skip.py"], ["tests/other"]) is True
+        # Matched by directory-like glob
+        assert is_ignored_pytest_target("tests/other/sub/test.py", ["tests/skip.py"], ["tests/other"]) is True
+        # Not matched by either
+        assert is_ignored_pytest_target("tests/keep.py", ["tests/skip.py"], ["tests/other"]) is False
+
 
 # ============================================================================
 # extract_test_functions_from_text / module

@@ -661,6 +661,123 @@ class TestGetBaseCommit:
 
 
 # ============================================================================
+# _collect_relevant_tree_paths
+# ============================================================================
+
+
+class TestCollectRelevantTreePaths:
+    def test_filters_irrelevant_paths(self):
+        """ls-tree output is filtered by _is_relevant_path."""
+        from modules.past_commits import _collect_relevant_tree_paths
+
+        with patch("modules.past_commits._run_git") as mock_git:
+            mock_git.return_value = (
+                ".github/workflows/gpu_unit_tests.yml\n"
+                "tests/test_foo.py\n"
+                "README.md\n"
+                "setup.py\n"
+                "examples/test_example.sh\n"
+                "examples/data.csv\n"
+            )
+            result = _collect_relevant_tree_paths(Path("/fake/repo"), "abc123")
+            assert ".github/workflows/gpu_unit_tests.yml" in result
+            assert "tests/test_foo.py" in result
+            assert "examples/test_example.sh" in result
+            assert "README.md" not in result
+            assert "setup.py" not in result
+            assert "examples/data.csv" not in result
+
+    def test_empty_output(self):
+        """Empty ls-tree output returns empty list."""
+        from modules.past_commits import _collect_relevant_tree_paths
+
+        with patch("modules.past_commits._run_git") as mock_git:
+            mock_git.return_value = ""
+            result = _collect_relevant_tree_paths(Path("/fake/repo"), "abc123")
+            assert result == []
+
+    def test_backslash_paths_normalized(self):
+        """Windows-style backslash paths are normalized."""
+        from modules.past_commits import _collect_relevant_tree_paths
+
+        with patch("modules.past_commits._run_git") as mock_git:
+            mock_git.return_value = ".github\\workflows\\test.yml\n"
+            result = _collect_relevant_tree_paths(Path("/fake/repo"), "abc123")
+            assert ".github/workflows/test.yml" in result
+
+
+# ============================================================================
+# _materialize_snapshot
+# ============================================================================
+
+
+class TestMaterializeSnapshot:
+    def test_materializes_relevant_files(self, tmp_path):
+        """_materialize_snapshot writes relevant files to the snapshot root."""
+        from modules.past_commits import _materialize_snapshot
+
+        snapshot_root = tmp_path / "snapshot"
+
+        def fake_run_git(_repo_root: Path, *args: str) -> str:
+            cmd = " ".join(args)
+            if cmd.startswith("ls-tree"):
+                return ".github/workflows/gpu.yml\ntests/test_foo.py\nREADME.md\n"
+            if cmd.startswith("show"):
+                # Extract the path from the show command: show abc123:.github/workflows/gpu.yml
+                rel_path = args[-1].split(":", 1)[1]
+                return f"content of {rel_path}"
+            return ""
+
+        with patch("modules.past_commits._run_git", side_effect=fake_run_git):
+            with patch("modules.past_commits._collect_relevant_tree_paths") as mock_collect:
+                mock_collect.return_value = [
+                    ".github/workflows/gpu.yml",
+                    "tests/test_foo.py",
+                ]
+                _materialize_snapshot(Path("/fake/repo"), "abc123", snapshot_root)
+
+        gpu_yml = snapshot_root / ".github" / "workflows" / "gpu.yml"
+        assert gpu_yml.is_file()
+        assert gpu_yml.read_text(encoding="utf-8") == "content of .github/workflows/gpu.yml"
+
+        test_py = snapshot_root / "tests" / "test_foo.py"
+        assert test_py.is_file()
+        assert test_py.read_text(encoding="utf-8") == "content of tests/test_foo.py"
+
+        # README.md should NOT be materialized (filtered by _collect_relevant_tree_paths)
+        assert not (snapshot_root / "README.md").exists()
+
+    def test_skips_missing_files_gracefully(self, tmp_path):
+        """When git show fails for a path, it is skipped without crashing."""
+        from modules.past_commits import _materialize_snapshot
+
+        snapshot_root = tmp_path / "snapshot"
+
+        def fake_run_git(_repo_root: Path, *args: str) -> str:
+            cmd = " ".join(args)
+            if cmd.startswith("ls-tree"):
+                return ".github/workflows/gpu.yml\ntests/deleted_file.py\n"
+            if cmd.startswith("show"):
+                rel_path = args[-1].split(":", 1)[1]
+                if "deleted_file" in rel_path:
+                    raise __import__("subprocess").CalledProcessError(128, ["git"], "")
+                return f"content of {rel_path}"
+            return ""
+
+        with patch("modules.past_commits._run_git", side_effect=fake_run_git):
+            with patch("modules.past_commits._collect_relevant_tree_paths") as mock_collect:
+                mock_collect.return_value = [
+                    ".github/workflows/gpu.yml",
+                    "tests/deleted_file.py",
+                ]
+                # Should not raise
+                _materialize_snapshot(Path("/fake/repo"), "abc123", snapshot_root)
+
+        assert (snapshot_root / ".github" / "workflows" / "gpu.yml").is_file()
+        assert not (snapshot_root / "tests" / "deleted_file.py").exists()
+
+
+# ============================================================================
 # _build_head_status_index / _lookup_npu_support
 # ============================================================================
 
@@ -679,6 +796,191 @@ class TestHeadStatusIndex:
         assert index["ut"] == {}
         assert index["st"] == {}
 
+    def test_indexes_matched_cases(self):
+        """When CPU/GPU and NPU have exact same cases, they are indexed as aligned."""
+        from modules.past_commits import _build_head_status_index
+
+        cpu_case = {
+            "workflow_name": "GPU Tests",
+            "workflow_path": ".github/workflows/gpu.yml",
+            "file_name": "gpu.yml",
+            "workflow_kind": "gpu",
+            "pair_key": "gpu",
+            "job_name": "test-job",
+            "step_name": "Run pytest",
+            "line_number": 10,
+            "command_type": "pytest",
+            "case_kind": "ut",
+            "target": "tests/test_foo.py::test_add",
+            "raw_command": "pytest tests/",
+            "signature": "pytest",
+            "case_id": "c1",
+            "display_name": "tests/test_foo.py::test_add",
+        }
+        npu_case = {
+            **cpu_case,
+            "workflow_name": "NPU Tests",
+            "workflow_path": ".github/workflows/npu.yml",
+            "file_name": "npu.yml",
+            "workflow_kind": "npu",
+            "case_id": "c2",
+        }
+
+        index = _build_head_status_index([cpu_case, npu_case])
+        pair_index = index["ut"]["gpu"]
+        assert len(pair_index) == 1
+        key = ("pytest", "tests/test_foo.py::test_add", "pytest")
+        assert key in pair_index
+        assert pair_index[key][0] == "aligned"
+        assert len(pair_index[key][1]) > 0  # npu_refs populated
+
+    def test_indexes_cpu_gpu_only_cases(self):
+        """When a case only exists on CPU/GPU side, it is indexed as missing_in_npu_workflows."""
+        from modules.past_commits import _build_head_status_index
+
+        cpu_case = {
+            "workflow_name": "GPU Tests",
+            "workflow_path": ".github/workflows/gpu.yml",
+            "file_name": "gpu.yml",
+            "workflow_kind": "gpu",
+            "pair_key": "gpu",
+            "job_name": "test-job",
+            "step_name": "Run pytest",
+            "line_number": 10,
+            "command_type": "pytest",
+            "case_kind": "ut",
+            "target": "tests/test_only_cpu.py::test_feature",
+            "raw_command": "pytest tests/",
+            "signature": "pytest",
+            "case_id": "c1",
+            "display_name": "tests/test_only_cpu.py::test_feature",
+        }
+
+        index = _build_head_status_index([cpu_case])
+        pair_index = index["ut"]["gpu"]
+        assert len(pair_index) == 1
+        key = ("pytest", "tests/test_only_cpu.py::test_feature", "pytest")
+        assert key in pair_index
+        assert pair_index[key][0] == "missing_in_npu_workflows"
+
+    def test_indexes_manual_review_cases(self):
+        """When same target exists on both sides with different signatures, manual_review_needed."""
+        from modules.past_commits import _build_head_status_index
+
+        cpu_case = {
+            "workflow_name": "GPU Tests",
+            "workflow_path": ".github/workflows/gpu.yml",
+            "file_name": "gpu.yml",
+            "workflow_kind": "gpu",
+            "pair_key": "gpu",
+            "job_name": "test-job",
+            "step_name": "Run pytest",
+            "line_number": 10,
+            "command_type": "pytest",
+            "case_kind": "ut",
+            "target": "tests/test_common.py::test_feature",
+            "raw_command": "pytest tests/",
+            "signature": "pytest",
+            "case_id": "c1",
+            "display_name": "tests/test_common.py::test_feature",
+        }
+        npu_case = {
+            **cpu_case,
+            "workflow_name": "NPU Tests",
+            "workflow_path": ".github/workflows/npu.yml",
+            "file_name": "npu.yml",
+            "workflow_kind": "npu",
+            "signature": "pytest --npu-flag",
+            "raw_command": "pytest --npu-flag tests/",
+            "case_id": "c2",
+        }
+
+        index = _build_head_status_index([cpu_case, npu_case])
+        pair_index = index["ut"]["gpu"]
+        assert len(pair_index) == 1
+        # The key uses cpu_case's signature
+        key = ("pytest", "tests/test_common.py::test_feature", "pytest")
+        assert key in pair_index
+        assert pair_index[key][0] == "manual_review_needed"
+
+    def test_status_rank_prevents_overwrite(self):
+        """Lower-ranked status (e.g., aligned) is not overwritten by higher-ranked status."""
+        from modules.past_commits import _build_head_status_index
+
+        cpu_case = {
+            "workflow_name": "GPU Tests",
+            "workflow_path": ".github/workflows/gpu.yml",
+            "file_name": "gpu.yml",
+            "workflow_kind": "gpu",
+            "pair_key": "gpu",
+            "job_name": "test-job",
+            "step_name": "Run pytest",
+            "line_number": 10,
+            "command_type": "pytest",
+            "case_kind": "ut",
+            "target": "tests/test_foo.py::test_add",
+            "raw_command": "pytest tests/",
+            "signature": "pytest",
+            "case_id": "c1",
+            "display_name": "tests/test_foo.py::test_add",
+        }
+        # Two NPU cases: one exact match, one with different signature
+        npu_aligned = {
+            **cpu_case,
+            "workflow_name": "NPU Tests",
+            "workflow_path": ".github/workflows/npu.yml",
+            "file_name": "npu.yml",
+            "workflow_kind": "npu",
+            "case_id": "c2",
+        }
+        npu_divergent = {
+            **cpu_case,
+            "workflow_name": "NPU Tests 2",
+            "workflow_path": ".github/workflows/npu2.yml",
+            "file_name": "npu2.yml",
+            "workflow_kind": "npu",
+            "signature": "pytest --other",
+            "raw_command": "pytest --other tests/",
+            "case_id": "c3",
+        }
+
+        index = _build_head_status_index([cpu_case, npu_aligned, npu_divergent])
+        pair_index = index["ut"]["gpu"]
+        # The key with cpu_case's signature should be "aligned" from the exact match,
+        # not overwritten by the divergent NPU case
+        key = ("pytest", "tests/test_foo.py::test_add", "pytest")
+        assert key in pair_index
+        assert pair_index[key][0] == "aligned"
+
+    def test_st_kind_cases_indexed_separately(self):
+        """ST cases are indexed under the 'st' bucket, separate from UT."""
+        from modules.past_commits import _build_head_status_index
+
+        st_case = {
+            "workflow_name": "GPU E2E",
+            "workflow_path": ".github/workflows/gpu_e2e.yml",
+            "file_name": "gpu_e2e.yml",
+            "workflow_kind": "gpu",
+            "pair_key": "e2e",
+            "job_name": "e2e-job",
+            "step_name": "Run",
+            "line_number": 10,
+            "command_type": "torchrun",
+            "case_kind": "st",
+            "target": "tests/test_trainer.py",
+            "raw_command": "torchrun tests/test_trainer.py",
+            "signature": "torchrun tests/test_trainer.py",
+            "case_id": "st1",
+            "display_name": "tests/test_trainer.py [GPU E2E / e2e-job / Run]",
+        }
+
+        index = _build_head_status_index([st_case])
+        # UT bucket may have an empty entry for the pair_key since
+        # _build_head_status_index iterates UT/ST for every pair_key.
+        assert "e2e" in index["st"]
+        pair_index = index["st"]["e2e"]
+        assert len(pair_index) == 1
+
 
 class TestLookupNpuSupport:
     def test_not_found_returns_missing(self):
@@ -695,6 +997,84 @@ class TestLookupNpuSupport:
         status, refs = _lookup_npu_support(case, status_index)
         assert status == "missing_in_npu_workflows"
         assert refs == []
+
+    def test_found_aligned(self):
+        """When case is found in index with 'aligned' status."""
+        from modules.past_commits import _lookup_npu_support
+
+        npu_ref = {"workflow_path": ".github/workflows/npu.yml", "job_name": "j", "step_name": "s"}
+        case = {
+            "case_kind": "ut",
+            "pair_key": "gpu",
+            "command_type": "pytest",
+            "target": "tests/test_foo.py::test_add",
+            "signature": "pytest",
+        }
+        pair_index = {
+            ("pytest", "tests/test_foo.py::test_add", "pytest"): ("aligned", [npu_ref]),
+        }
+        status_index = {"ut": {"gpu": pair_index}, "st": {}}
+        status, refs = _lookup_npu_support(case, status_index)
+        assert status == "aligned"
+        assert refs == [npu_ref]
+
+    def test_found_manual_review_needed(self):
+        """When case is found in index with 'manual_review_needed' status."""
+        from modules.past_commits import _lookup_npu_support
+
+        case = {
+            "case_kind": "ut",
+            "pair_key": "gpu",
+            "command_type": "pytest",
+            "target": "tests/test_common.py::test_feature",
+            "signature": "pytest",
+        }
+        pair_index = {
+            ("pytest", "tests/test_common.py::test_feature", "pytest"): ("manual_review_needed", []),
+        }
+        status_index = {"ut": {"gpu": pair_index}, "st": {}}
+        status, refs = _lookup_npu_support(case, status_index)
+        assert status == "manual_review_needed"
+
+    def test_found_missing_in_npu(self):
+        """When case is found in index with 'missing_in_npu_workflows' status."""
+        from modules.past_commits import _lookup_npu_support
+
+        case = {
+            "case_kind": "st",
+            "pair_key": "e2e",
+            "command_type": "torchrun",
+            "target": "tests/test_trainer.py",
+            "signature": "torchrun tests/test_trainer.py",
+        }
+        pair_index = {
+            ("torchrun", "tests/test_trainer.py", "torchrun tests/test_trainer.py"): (
+                "missing_in_npu_workflows",
+                [],
+            ),
+        }
+        status_index = {"ut": {}, "st": {"e2e": pair_index}}
+        status, refs = _lookup_npu_support(case, status_index)
+        assert status == "missing_in_npu_workflows"
+
+    def test_different_pair_key_not_found(self):
+        """When the pair_key doesn't match, returns missing_in_npu_workflows."""
+        from modules.past_commits import _lookup_npu_support
+
+        case = {
+            "case_kind": "ut",
+            "pair_key": "other_pair",
+            "command_type": "pytest",
+            "target": "tests/test_foo.py::test_add",
+            "signature": "pytest",
+        }
+        pair_index = {
+            ("pytest", "tests/test_foo.py::test_add", "pytest"): ("aligned", []),
+        }
+        status_index = {"ut": {"gpu": pair_index}, "st": {}}
+        status, refs = _lookup_npu_support(case, status_index)
+        # pair_key "other_pair" not in index → not found
+        assert status == "missing_in_npu_workflows"
 
 
 # ============================================================================

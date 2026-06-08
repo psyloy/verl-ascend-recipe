@@ -132,7 +132,23 @@ def is_ignored_pytest_target(path_text: str, ignore_paths: list[str], ignore_glo
         candidate = normalize_path_text(ignore_path)
         if normalized == candidate or normalized.startswith(candidate.rstrip("/") + "/"):
             return True
-    return any(fnmatch(normalized, pattern) for pattern in ignore_globs)
+    for pattern in ignore_globs:
+        if _is_glob_pattern(pattern):
+            if fnmatch(normalized, pattern):
+                return True
+        else:
+            # pytest treats directory-like patterns (no wildcards) as prefix
+            # matches: ``--ignore-glob=tests/skip`` excludes all files under
+            # ``tests/skip/``.
+            candidate = normalize_path_text(pattern)
+            if normalized == candidate or normalized.startswith(candidate.rstrip("/") + "/"):
+                return True
+    return False
+
+
+def _is_glob_pattern(pattern: str) -> bool:
+    """Return True when *pattern* contains ``fnmatch``-style wildcard characters."""
+    return any(ch in pattern for ch in ("*", "?", "["))
 
 
 def extract_test_functions_from_file(path: Path) -> list[str]:

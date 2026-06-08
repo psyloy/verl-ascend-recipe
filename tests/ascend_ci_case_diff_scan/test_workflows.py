@@ -61,6 +61,29 @@ class TestClassifyWorkflow:
         assert classify_workflow("MY_ASCEND", "") == "npu"
         assert classify_workflow("CPU_UNIT_TESTS", "") == "cpu"
 
+    def test_runs_on_case_insensitive(self):
+        """RUNS_ON_ASCEND_RE uses re.IGNORECASE — verify it matches mixed-case."""
+        from modules.workflows import classify_workflow
+
+        content = "jobs:\n  test:\n    runs-on: Aarch64"
+        assert classify_workflow("some_workflow", content) == "npu"
+
+        content = "jobs:\n  test:\n    runs-on: AARCH64"
+        assert classify_workflow("some_workflow", content) == "npu"
+
+        content = "jobs:\n  test:\n    runs-on: a2-HIGHGPU-8g"
+        assert classify_workflow("some_workflow", content) == "npu"
+
+    def test_image_case_insensitive(self):
+        """IMAGE_ASCEND_RE uses re.IGNORECASE — verify it matches mixed-case."""
+        from modules.workflows import classify_workflow
+
+        content = "jobs:\n  test:\n    container:\n      image: ASCEND-mindspore"
+        assert classify_workflow("some_workflow", content) == "npu"
+
+        content = "jobs:\n  test:\n    container:\n      image: Ascend-MindSpore"
+        assert classify_workflow("some_workflow", content) == "npu"
+
 
 # ============================================================================
 # workflow_pair_key
@@ -712,6 +735,33 @@ class TestMultilineRunEntries:
         assert len(entries) == 2
         assert entries[0][0] == "pytest tests/"
         assert entries[1][0] == "pytest tests/more/"
+
+    def test_inline_run_command(self):
+        """Cover L178-179: inline run: without | or > creates a single entry."""
+        from modules.workflows import _extract_run_entries
+
+        lines = [
+            "      - run: pytest tests/",
+            "      - name: next step",
+            "        run: echo done",
+        ]
+        entries, next_idx = _extract_run_entries(lines, 0, 6, "pytest tests/")
+        assert len(entries) == 1
+        assert entries[0][0] == "pytest tests/"
+        assert entries[0][1] == 1  # line_number is start_idx + 1
+
+    def test_inline_run_with_shell_separators(self):
+        """Inline run with shell separators is merged into a single entry."""
+        from modules.workflows import _extract_run_entries
+
+        lines = [
+            "      - run: cd tests && pytest tests/",
+            "      - name: next step",
+            "        run: echo done",
+        ]
+        entries, next_idx = _extract_run_entries(lines, 0, 6, "cd tests && pytest tests/")
+        assert len(entries) == 1
+        assert "cd tests && pytest tests/" in entries[0][0]
 
 
 # ============================================================================

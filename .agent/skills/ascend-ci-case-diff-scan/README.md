@@ -26,7 +26,6 @@ python scripts/scan_ascend_ci_case_diff.py \
 ```
 SKILL.md                  # Skill reference (loaded by Claude Code)
 README.md                 # This file
-doc.md                    # Design document (Chinese)
 config/workflow_scope.json # Ignored workflow patterns
 references/repo-signals.md # Target-repo signal definitions
 scripts/                  # Python scanner implementation

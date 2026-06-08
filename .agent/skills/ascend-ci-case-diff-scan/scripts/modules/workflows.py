@@ -37,7 +37,6 @@ STEP_NAME_RE = re.compile(r"^(\s*)-\s+name:\s*(.+?)\s*$")
 RUN_RE = re.compile(r"^(\s*)run:\s*(.*)$")
 RUNS_ON_ASCEND_RE = re.compile(r"runs-on:\s+.*(?:aarch64|a2|a3)", re.IGNORECASE)
 IMAGE_ASCEND_RE = re.compile(r"image:\s+.*ascend", re.IGNORECASE)
-ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+)+")
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)$")
 TORCHRUN_RE = re.compile(r"\btorchrun\b")
 PYTEST_SELECTION_OPTIONS = {"-k", "-m"}
