@@ -431,8 +431,6 @@ class PredictorAsyncActorRolloutRefWorker(AsyncActorRolloutRefWorker):
                 num_batches = 0
                 epoch_kendall_taus = []
                 for batch_hidden, batch_lengths in dataloader:
-                    # batch_hidden = batch_hidden.float().requires_grad_(True)
-                    # batch_lengths = batch_lengths.float()
                     preds = predictor(batch_hidden).squeeze(-1).unsqueeze(0)
                     labels = batch_lengths.unsqueeze(0)
                     loss = self.actor.listmle_loss(preds, labels, generator=listmle_generator)
