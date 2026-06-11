@@ -45,7 +45,7 @@ export NNODES=32
 NPUS_PER_NODE=16
 
 #修改为当前节点的通信网卡
-export SOCKET_IFNAME="enp48s3u1u1"
+export SOCKET_IFNAME="Your IFNAME"
 export HCCL_SOCKET_IFNAME=$SOCKET_IFNAME
 export TP_SOCKET_IFNAME=$SOCKET_IFNAME
 export GLOO_SOCKET_IFNAME=$SOCKET_IFNAME
@@ -53,10 +53,7 @@ export GLOO_SOCKET_IFNAME=$SOCKET_IFNAME
 #获取当前节点IP
 CURRENT_IP=$(ifconfig $SOCKET_IFNAME | grep -Eo 'inet (addr:)?([0-9]{1,3}\.){3}[0-9]{1,3}' | awk '{print $NF}')
 #修改为对应主节点IP
-# MASTER_ADDR=$CURRENT_IP
-# MASTER_ADDR=80.5.21.135
-MASTER_ADDR=80.5.25.101
-# export MASTER_ADDR=$CURRENT_IP  # 单机
+MASTER_ADDR="Your IP_ADDRESS"
 
 
 if [ "$MASTER_ADDR" = "$CURRENT_IP" ]; then
