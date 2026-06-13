@@ -152,7 +152,6 @@ ACTOR_CONFIG=(
     +actor_rollout_ref.actor.megatron.override_transformer_config.context_parallel_algo=kvallgather_cp_algo
     +actor_rollout_ref.actor.megatron.override_transformer_config.reset_position_ids=False
     +actor_rollout_ref.actor.megatron.override_transformer_config.use_ascend_mc2=False
-    actor_rollout_ref.actor.checkpoint.save_contents="['model']" 
 )
 
 REF_CONFIG=(
@@ -168,9 +167,18 @@ REF_CONFIG=(
 )
 
 ROLLOUT_CONFIG=(
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$gen_tp
+    actor_rollout_ref.rollout.data_parallel_size=$gen_dp
+    actor_rollout_ref.rollout.expert_parallel_size=$gen_ep
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=${use_dynamic_bsz}
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len}
     actor_rollout_ref.rollout.enforce_eager=False
+    actor_rollout_ref.rollout.n=${n_resp_per_prompt}
+    actor_rollout_ref.rollout.temperature=1.0
+    actor_rollout_ref.rollout.top_p=1.0
+    actor_rollout_ref.rollout.top_k=-1
+    actor_rollout_ref.rollout.load_format='dummy'
+    actor_rollout_ref.rollout.calculate_log_probs=True
     +actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_mode="FULL_DECODE_ONLY"
     +actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_capture_sizes="[2, 4, 8, 16, 24, 32]"
     ++actor_rollout_ref.rollout.engine_kwargs.vllm.additional_config.enable_cpu_binding=True
