@@ -121,6 +121,9 @@ pip uninstall -y torch_c_dlpack_ext || true
 # 安装前 source CANN
 git clone https://github.com/MinghuasLab/flash-attention-npu.git
 cd flash-attention-npu
+git checkout trainlnferConsist
+git fetch origin pull/1/head:pr-1
+git merge pr-1 --no-edit
 git submodule update --init --recursive
 python setup.py install
 cd ..
