@@ -213,18 +213,18 @@ export NGPUS_PER_NODE=16                         # 单机 NPU 数
 
 ```bash
 # GRPO — Qwen3-4B dense
-bash verl_ascend_recipe/true_on_policy/scripts/grpo/4b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
 
 # GRPO — Qwen3-30B-A3B MoE
-bash verl_ascend_recipe/true_on_policy/scripts/grpo/30b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_30b_megatron_npu.sh
 
 # GSPO — Qwen3-4B / 30B
-bash verl_ascend_recipe/true_on_policy/scripts/gspo/4b.sh
-bash verl_ascend_recipe/true_on_policy/scripts/gspo/30b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/gspo/run_gspo_qwen3_4b_megatron_npu.sh
+bash verl_ascend_recipe/true_on_policy/scripts/gspo/run_gspo_qwen3_30b_megatron_npu.sh
 
 # DAPO — Qwen3-4B / 30B（需先 `git submodule update --init --recursive recipe`）
-bash verl_ascend_recipe/true_on_policy/scripts/dapo/4b.sh
-bash verl_ascend_recipe/true_on_policy/scripts/dapo/30b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_4b_megatron_npu.sh
+bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_30b_megatron_npu.sh
 ```
 
 各算法训练入口：
