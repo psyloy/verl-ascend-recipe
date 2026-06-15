@@ -27,6 +27,7 @@ true_on_policy/
 ├── README.md                 # 本文档
 ├── REQUIRED_VERL.txt         # verl 版本钉扎
 ├── patch/
+├── ├── batch_invariant_ops.py
 │   └── npu_true_on_policy_patch.py
 └── scripts/
     ├── grpo/   run_grpo_qwen3_4b_megatron_npu.sh  run_grpo_qwen3_30b_megatron_npu.sh
@@ -129,12 +130,12 @@ cd ..
 
 按需下载对应平台的 `.run` 包并安装（安装前 source CANN）：
 
-| 平台 | 下载 |
-| --- | --- |
-| 910B aarch64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.aarch64.run |
-| 910B x86_64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.x86_64.run |
+| 平台         | 下载 |
+|------------| --- |
+| A2 aarch64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.aarch64.run |
+| A2 x86_64  | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.x86_64.run |
 | A3 aarch64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-A3-1.0.0-linux.aarch64.run |
-| A3 x86_64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-A3-1.0.0-linux.x86_64.run |
+| A3 x86_64  | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-A3-1.0.0-linux.x86_64.run |
 
 ```bash
 chmod +x cann-ops-batch_invariant-*.run
