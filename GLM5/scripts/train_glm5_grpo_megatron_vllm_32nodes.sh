@@ -76,12 +76,13 @@ DATA_CONFIG=(
     data.filter_overlong_prompts=False
     data.truncation='left'
     +data.apply_chat_template_kwargs.enable_thinking=False
-    # data.shuffle=False
+    data.shuffle=True
 )
 
 MODEL_CONFIG=(
     actor_rollout_ref.model.path="${MODEL_PATH}"
     actor_rollout_ref.model.use_remove_padding=False
+    actor_rollout_ref.model.use_fused_kernels=False
 )
 
 ALGORITHM_CONFIG=(
@@ -172,13 +173,17 @@ ROLLOUT_CONFIG=(
     actor_rollout_ref.rollout.expert_parallel_size=$gen_ep
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=${use_dynamic_bsz}
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len}
-    actor_rollout_ref.rollout.enforce_eager=False
     actor_rollout_ref.rollout.n=${n_resp_per_prompt}
     actor_rollout_ref.rollout.temperature=1.0
     actor_rollout_ref.rollout.top_p=1.0
     actor_rollout_ref.rollout.top_k=-1
     actor_rollout_ref.rollout.load_format='dummy'
     actor_rollout_ref.rollout.calculate_log_probs=True
+    actor_rollout_ref.rollout.max_num_seqs=${max_num_seqs}
+    actor_rollout_ref.rollout.max_num_batched_tokens=${max_num_batched_tokens}
+    actor_rollout_ref.rollout.max_model_len=${max_model_len}
+    actor_rollout_ref.rollout.gpu_memory_utilization=${gpu_memory_utilization}
+    actor_rollout_ref.rollout.enforce_eager=False
     +actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_mode="FULL_DECODE_ONLY"
     +actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_capture_sizes="[2, 4, 8, 16, 24, 32]"
     ++actor_rollout_ref.rollout.engine_kwargs.vllm.additional_config.enable_cpu_binding=True
