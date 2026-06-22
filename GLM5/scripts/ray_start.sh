@@ -10,7 +10,8 @@ export ASCEND_LAUNCH_BLOCKING=0
 export ASCEND_RT_VISIBLE_DEVICES='0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15'
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
 #TASK_QUEUE_ENABLE，下发优化，图模式设置为1，非图模式设置为2
-export TASK_QUEUE_ENABLE=1  
+export TASK_QUEUE_ENABLE=2
+export VLLM_ASCEND_TASK_QUEUE_ENABLE=1
 export HCCL_ASYNC_ERROR_HANDLING=0
 export HCCL_EXEC_TIMEOUT=7200
 export HCCL_CONNECT_TIMEOUT=7200
@@ -38,8 +39,10 @@ mkdir logs
 # 精度用
 export CLOSE_MATMUL_K_SHIFT=1   # 关闭矩阵乘法（MatMul）的 K 维度优化移位。
 export ATB_MATMUL_SHUFFLE_K_ENABLE=0    # 关闭 ATB 库的矩阵乘法 K 维度重排优化。
-export HCCL_DETERMINISTIC="true"    # 开启昇腾集合通信 确定性模式
-# export VLLM_ENABLE_V1_MULTIPROCESSING=0 # 关闭 vLLM V1 版本的多进程模式
+
+# 预编译防止超时
+python -c "import mindspeed; from mindspeed.op_builder.swiglu_builder import SwigluOpBuilder; SwigluOpBuilder().load()"
+python -c "import mindspeed; from mindspeed.op_builder import GMMOpBuilder; GMMOpBuilder().load()"
 
 export NNODES=32
 NPUS_PER_NODE=16
@@ -58,7 +61,7 @@ MASTER_ADDR="Your IP_ADDRESS"
 
 if [ "$MASTER_ADDR" = "$CURRENT_IP" ]; then
   # 主节点启动
-  ray start --head --port 8377 --dashboard-host=$MASTER_ADDR --node-ip-address=$CURRENT_IP --dashboard-port=8265 --resources='{"NPU": '$NPUS_PER_NODE'}'
+  ray start --head --port 8260 --dashboard-host=$MASTER_ADDR --node-ip-address=$CURRENT_IP --dashboard-port=8265 --resources='{"NPU": '$NPUS_PER_NODE'}'
 
   while true; do
       ray_status_output=$(ray status)
