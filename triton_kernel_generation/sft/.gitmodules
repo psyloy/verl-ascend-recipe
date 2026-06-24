@@ -1,0 +1,3 @@
+[submodule "verl"]
+	path = sft/verl
+	url = https://github.com/verl-project/verl.git
