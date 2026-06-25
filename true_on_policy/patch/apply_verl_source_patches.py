@@ -36,8 +36,7 @@ def _apply_patch_file(verl_root: Path, patch_file: Path) -> None:
 
     if not _git_apply_check(verl_root, patch_file):
         raise RuntimeError(
-            f"[true_on_policy] patch does not apply cleanly: {patch_file.name} "
-            f"(verl tree at {verl_root})."
+            f"[true_on_policy] patch does not apply cleanly: {patch_file.name} (verl tree at {verl_root})."
         )
 
     subprocess.run(

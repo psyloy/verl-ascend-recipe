@@ -469,4 +469,3 @@ def apply_batch_consistency_patches() -> None:
     ascend_forward_context.select_moe_comm_method = select_all_to_all_moe_comm_method_train_infer_consistent
 
     _patch_vllm_ascend_batch_invariance_entry()
-
