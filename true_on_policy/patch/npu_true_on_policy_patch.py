@@ -470,5 +470,3 @@ def apply_batch_consistency_patches() -> None:
 
     _patch_vllm_ascend_batch_invariance_entry()
 
-
-apply_batch_consistency_patches()

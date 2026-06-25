@@ -15,7 +15,7 @@
 | vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配 |
 | Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                        |
 | MindSpeed | `core_r0.16.0` |               |
-| verl | `release/v0.8.0` + [PR #6678](https://github.com/verl-project/verl/pull/6678) | PP 适配                  |
+| verl | `release/v0.8.0` ||
 | triton_ascend | 3.2.1 | CANN 9.0 需此版本          |
 
 ---
@@ -26,9 +26,13 @@
 true_on_policy/
 ├── README.md                 # 本文档
 ├── REQUIRED_VERL.txt         # verl 版本钉扎
+├── __init__.py               # Python 包标记
 ├── patch/
-├── ├── batch_invariant_ops.py
-│   └── npu_true_on_policy_patch.py
+│   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口（源码 patch + 训推 patch）
+│   ├── apply_verl_source_patches.py       # PR #6678 git apply 逻辑
+│   ├── verl_pr6678_pp_mindspeed.patch     # verl PR #6678（PP + MindSpeed repatch）
+│   ├── npu_true_on_policy_patch.py        # vLLM 训推一致性运行时 patch
+│   └── batch_invariant_ops.py
 └── scripts/
     ├── grpo/   run_grpo_qwen3_4b_megatron_npu.sh  run_grpo_qwen3_30b_megatron_npu.sh
     ├── gspo/   run_gspo_qwen3_4b_megatron_npu.sh  run_gspo_qwen3_30b_megatron_npu.sh
@@ -72,20 +76,18 @@ pip install setuptools==80.9.0
 ### 3. 训练栈（verl + MindSpeed + Megatron-LM）
 
 ```bash
-# verl（含 PP 适配 PR）
 git clone https://github.com/verl-project/verl.git
 cd verl
 git checkout release/v0.8.0
-git fetch origin pull/6678/head:pr-6678
-git merge pr-6678 --no-edit
 git submodule update --init --recursive recipe   # DAPO 等算法 recipe，见下文
+
+# 将本 recipe 放入 verl 树（在 verl 根目录启动训练；patch 由 VERL_USE_EXTERNAL_MODULES 自动加载）
+git clone https://github.com/verl-project/verl-ascend-recipe.git
+mkdir -p verl_ascend_recipe
+cp -r ../verl-ascend-recipe/true_on_policy verl_ascend_recipe/
+
 pip install -v -e .
 cd ..
-
-# 将本 recipe 放入 verl 树（训推 patch + 启动脚本）
-git clone https://github.com/verl-project/verl-ascend-recipe.git
-mkdir -p verl/verl_ascend_recipe
-cp -r verl-ascend-recipe/true_on_policy verl/verl_ascend_recipe/
 
 # MindSpeed
 git clone https://gitcode.com/Ascend/MindSpeed.git
@@ -236,17 +238,20 @@ bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_30b_megatron_
 
 ### 4. 训推一致性开关
 
-所有脚本默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
+所有训练脚本已设置 `VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch`，`import verl` 时会**自动**应用 verl 源码 patch 与 vLLM 训推一致性 patch，无需额外安装步骤。
+
+默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
 
 ```bash
-ENABLE_TRUE_ON_POLICY=0 bash verl_ascend_recipe/true_on_policy/scripts/grpo/4b.sh
+ENABLE_TRUE_ON_POLICY=0 bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
 ```
 
 开启时会同时生效：
 
 | 层级 | 机制 |
 | --- | --- |
-| Rollout（vLLM） | `VLLM_BATCH_INVARIANT=1` + `VERL_USE_EXTERNAL_MODULES` 加载 `npu_patch` |
+| verl 源码 | `VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch` 在 `import verl` 时自动打 patch |
+| Rollout（vLLM） | 同上入口加载 `npu_true_on_policy_patch` + `VLLM_BATCH_INVARIANT=1` |
 | 训练（Megatron） | MindSpeed `batch_invariant_mode` / `use_batch_invariant_ops` 等 Hydra 参数 |
 
 ---
