@@ -6,17 +6,17 @@
 
 ## 版本配套
 
-| 组件 | 版本 | 备注                     |
-| --- | --- |------------------------|
-| CANN | 9.0.0.B160（CANN900B160） |                        |
-| Python | 3.11 |                        |
-| PyTorch / torch_npu | 2.9.0 | 随 PTA B120             |
-| vLLM | 0.18.0 |                        |
-| vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配 |
-| Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                        |
-| MindSpeed | `core_r0.16.0` |               |
-| verl | `release/v0.8.0` 或 `main`（见 patch 自动选择） ||
-| triton_ascend | 3.2.1 | CANN 9.0 需此版本          |
+| 组件 | 版本 | 备注                         |
+| --- | --- |----------------------------|
+| CANN | 9.0.0.B160（CANN900B160） |                            |
+| Python | 3.11 |                            |
+| PyTorch / torch_npu | 2.9.0 | 随 PTA B120                 |
+| vLLM | 0.18.0 |                            |
+| vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配     |
+| Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                            |
+| MindSpeed | `core_r0.16.0` |                            |
+| verl | `release/v0.8.0` 或 `main` | main可能会因为迭代重构的原因导致patch出问题 |
+| triton_ascend | 3.2.1 | CANN 9.0 需此版本              |
 
 ---
 
@@ -29,14 +29,14 @@ true_on_policy/
 ├── __init__.py               # Python 包标记
 ├── patch/
 │   ├── README.md                          # Patch 系统设计文档
-│   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口（源码 patch + 训推 patch）
+│   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口
 │   ├── apply_verl_source_patches.py       # 按 verl 版本自动选择并 git apply
 │   ├── verl_patch_selector.py             # 版本检测 + 上游特性检测
 │   ├── verl_patches/
-│   │   ├── verl_pr6732_npu_pp_v0.8.0.patch    # PR #6732 PP（release/v0.8.x）
-│   │   ├── verl_pr6732_npu_pp_main.patch      # PR #6732 PP（main）
+│   │   ├── verl_pr6732_npu_pp_v0.8.0.patch
+│   │   ├── verl_pr6732_npu_pp_main.patch
 │   │   └── verl_mindspeed_batch_invariant.patch
-│   ├── npu_true_on_policy_patch.py        # vLLM 训推一致性运行时 patch
+│   ├── npu_true_on_policy_patch.py
 │   └── batch_invariant_ops.py
 └── scripts/
     ├── grpo/   run_grpo_qwen3_4b_megatron_npu.sh  run_grpo_qwen3_30b_megatron_npu.sh
@@ -86,7 +86,7 @@ cd verl
 git checkout release/v0.8.0
 git submodule update --init --recursive recipe   # DAPO 等算法 recipe，见下文
 
-# 将本 recipe 放入 verl 树（在 verl 根目录启动训练；patch 由 VERL_USE_EXTERNAL_MODULES 自动加载）
+# 将本 recipe 放入 verl
 git clone https://github.com/verl-project/verl-ascend-recipe.git
 mkdir -p verl_ascend_recipe
 cp -r ../verl-ascend-recipe/true_on_policy verl_ascend_recipe/
@@ -166,8 +166,6 @@ Python 扩展包（`batch_invariant_ops` whl）：
 | GRPO / GSPO（30B） | `$HOME/data/dapo-math-17k.parquet` | 同训练集 |
 | DAPO | `$HOME/data/dapo-math-17k.parquet` | `$HOME/data/aime-2024.parquet` |
 
-DAPO 数据可参考上游 `recipe/dapo/prepare_dapo_data.sh`（需先初始化 `recipe` submodule，见下节）。
-
 ---
 
 ## DAPO 额外准备（recipe submodule）
@@ -201,7 +199,7 @@ python3 -m recipe.dapo.main_dapo --config-name=dapo_megatron_trainer ...
 ```bash
 conda activate verl_main
 source ${ASCEND_HOME}/set_env.sh          # CANN
-# source ${ASCEND_HOME}/../nnal/atb/set_env.sh   # 若使用 ATB，按实际路径调整
+source ${ASCEND_HOME}/../nnal/atb/set_env.sh
 cd verl                                   # verl 仓库根目录
 ```
 
@@ -243,17 +241,6 @@ bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_30b_megatron_
 
 ### 4. 训推一致性开关
 
-所有训练脚本已设置 `VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch`，`import verl` 时会**自动**应用 verl 源码 patch 与 vLLM 训推一致性 patch，无需额外安装步骤。Patch 架构与版本选择逻辑见 [patch/README.md](patch/README.md)。
-
-源码 patch 按检测到的 verl 版本选择（`verl/verl/version/version`）：
-
-| verl 版本 | PP patch（[PR #6732](https://github.com/verl-project/verl/pull/6732)） | MindSpeed patch |
-| --- | --- | --- |
-| `0.8.x` | `verl_pr6732_npu_pp_v0.8.0.patch` | `verl_mindspeed_batch_invariant.patch` |
-| `main` / 其他 | `verl_pr6732_npu_pp_main.patch` | 同上 |
-
-若 upstream 已包含 `ensure_rollout_config` 或 `use_flash_attn_npu_batch_invariant`，对应 patch 会自动跳过。
-
 默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
 
 ```bash
@@ -264,7 +251,6 @@ ENABLE_TRUE_ON_POLICY=0 bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_
 
 | 层级 | 机制 |
 | --- | --- |
-| verl 源码 | `VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch` 在 `import verl` 时自动打 patch |
 | Rollout（vLLM） | 同上入口加载 `npu_true_on_policy_patch` + `VLLM_BATCH_INVARIANT=1` |
 | 训练（Megatron） | MindSpeed `batch_invariant_mode` / `use_batch_invariant_ops` 等 Hydra 参数 |
 
