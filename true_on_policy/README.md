@@ -15,7 +15,7 @@
 | vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配 |
 | Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                        |
 | MindSpeed | `core_r0.16.0` |               |
-| verl | `release/v0.8.0` ||
+| verl | `release/v0.8.0` 或 `main`（见 patch 自动选择） ||
 | triton_ascend | 3.2.1 | CANN 9.0 需此版本          |
 
 ---
@@ -28,9 +28,14 @@ true_on_policy/
 ├── REQUIRED_VERL.txt         # verl 版本钉扎
 ├── __init__.py               # Python 包标记
 ├── patch/
+│   ├── README.md                          # Patch 系统设计文档
 │   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口（源码 patch + 训推 patch）
-│   ├── apply_verl_source_patches.py       # PR #6678 git apply 逻辑
-│   ├── verl_pr6678_pp_mindspeed.patch     # verl PR #6678（PP + MindSpeed repatch）
+│   ├── apply_verl_source_patches.py       # 按 verl 版本自动选择并 git apply
+│   ├── verl_patch_selector.py             # 版本检测 + 上游特性检测
+│   ├── verl_patches/
+│   │   ├── verl_pr6732_npu_pp_v0.8.0.patch    # PR #6732 PP（release/v0.8.x）
+│   │   ├── verl_pr6732_npu_pp_main.patch      # PR #6732 PP（main）
+│   │   └── verl_mindspeed_batch_invariant.patch
 │   ├── npu_true_on_policy_patch.py        # vLLM 训推一致性运行时 patch
 │   └── batch_invariant_ops.py
 └── scripts/
@@ -238,7 +243,16 @@ bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_30b_megatron_
 
 ### 4. 训推一致性开关
 
-所有训练脚本已设置 `VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch`，`import verl` 时会**自动**应用 verl 源码 patch 与 vLLM 训推一致性 patch，无需额外安装步骤。
+所有训练脚本已设置 `VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch`，`import verl` 时会**自动**应用 verl 源码 patch 与 vLLM 训推一致性 patch，无需额外安装步骤。Patch 架构与版本选择逻辑见 [patch/README.md](patch/README.md)。
+
+源码 patch 按检测到的 verl 版本选择（`verl/verl/version/version`）：
+
+| verl 版本 | PP patch（[PR #6732](https://github.com/verl-project/verl/pull/6732)） | MindSpeed patch |
+| --- | --- | --- |
+| `0.8.x` | `verl_pr6732_npu_pp_v0.8.0.patch` | `verl_mindspeed_batch_invariant.patch` |
+| `main` / 其他 | `verl_pr6732_npu_pp_main.patch` | 同上 |
+
+若 upstream 已包含 `ensure_rollout_config` 或 `use_flash_attn_npu_batch_invariant`，对应 patch 会自动跳过。
 
 默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
 
