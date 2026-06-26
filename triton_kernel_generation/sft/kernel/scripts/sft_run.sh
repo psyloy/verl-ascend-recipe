@@ -1,5 +1,5 @@
-export PYTHONPATH=$PYTHONPATH:/home/.../drkernel
-export PYTHONPATH=$PYTHONPATH:/home/.../drkernel/verl
+export PYTHONPATH=$PYTHONPATH:/home/.../sft
+export PYTHONPATH=$PYTHONPATH:/home/.../sft/verl
 export WANDB_MODE=offline
 
 # NPU 特定配置
@@ -46,7 +46,7 @@ echo -e "[Rank $RANK] 主机名: $(hostname)"
 echo -e "[Rank $RANK] HCCL 可用: $(if [ -n "$HCCL_INCOMING_HANDLE" ]; then echo "是"; else echo "未知"; fi)"
 echo -e "${YELLOW}========================================${NC}"
 
-nohup bash sft_fsdp/kernel/scripts/sft/coldstart_30b.sh \
+nohup bash kernel/scripts/coldstart_30b.sh \
   --train_batch_size 64 \
   --micro_batch_size_per_gpu 1 \
   --max_length 65536 \
