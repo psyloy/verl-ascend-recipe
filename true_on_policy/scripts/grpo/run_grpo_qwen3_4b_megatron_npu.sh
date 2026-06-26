@@ -18,7 +18,7 @@ export HCCL_OP_EXPANSION_MODE="AIV"
 export HCCL_ASYNC_ERROR_HANDLING=0
 export HCCL_EXEC_TIMEOUT=3600
 export HCCL_CONNECT_TIMEOUT=3600
-export VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch.npu_true_on_policy_patch
+export VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch
 
 # ---- train-infer consistency (true on-policy) ----
 ENABLE_TRUE_ON_POLICY=${ENABLE_TRUE_ON_POLICY:-1}
