@@ -4,28 +4,44 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
 
-# clone verl
-git submodule update --init
+# clone verl (if not exists)
+if [ ! -d "${ROOT_DIR}/verl" ]; then
+    git clone https://github.com/verl-project/verl.git "${ROOT_DIR}/verl"
+else
+    echo "[INFO] verl already exists, skip clone"
+fi
+
 cd "${ROOT_DIR}/verl"
+# ensure correct commit
+VERL_COMMIT="c780fc34b45e01a1538d6386947585d4f7370bef"
+git fetch origin
+git checkout ${VERL_COMMIT}
 
 pip install -e . --no-build-isolation --no-deps
 
 pip install --no-cache-dir "ray==2.47.1"
 
-pip install --no-cache-dir "vllm==0.10.2" "torch==2.8.0" "torchvision==0.23.0" "torchaudio==2.8.0" tensordict torchdata \
-    "transformers[hf_xet]==4.56.0" accelerate datasets peft hf-transfer \
-    "numpy<2.0.0" "pyarrow>=15.0.0" pandas \
-    codetiming hydra-core pylatexenc qwen-vl-utils dill pybind11 liger-kernel mathruler decord torchcodec \
-    pytest yapf py-spy pre-commit ruff uv pipx
+pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu --trusted-host download.pytorch.org --trusted-host download-r2.pytorch.org
+pip install torch-npu==2.8.0
 
-pip install sandbox-fusion --user
-
-pip install logfire --user
-
-pip install gradio --user
-pip install huggingface_hub --user
-pip install protobuf==3.20 --user
-pip install wandb==0.16.6 --user
+pip install transformers==4.57.6
+pip install tensordict==0.10.0
+pip install einops==0.8.2
+pip install peft==0.18.1
+pip install datasets==4.8.4
+pip install codetiming==1.4.0
+pip install pybind11==3.0.2
+pip install pylatexenc==2.10
+pip install tensorboard==2.20.0
+pip install wandb==0.25.1
+pip install torchdata==0.11.0
+pip install sandbox-fusion
+pip install logfire
+pip install gradio
+pip install huggingface_hub==0.36.2
+pip install protobuf==3.20
+pip install hydra-core
+pip install numpy==1.26.0
 
 # Install flash-attn-2.8.3
 ABI_FLAG="${ABI_FLAG:-FALSE}"

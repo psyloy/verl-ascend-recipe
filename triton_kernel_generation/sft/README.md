@@ -1,309 +1,89 @@
-# DR.Kernel: Reinforcement Learning Done Right for Triton Kernel Generations
+# 昇腾原生训练Triton算子生成模型实践
 
-This directory contains the training recipe and evaluation scripts for **DR.Kernel**, our approach to training language models for GPU kernel generation using reinforcement learning.
+本目录包含昇腾原生训练Triton算子生成模型的SFT训练方案，基于Qwen3-30B模型进行了NPU-Triton算子生成后训练。经SFT模型生成的NPU-Triton算子在kernelbench上的通过率和Fast@1/1.2指标均大幅提升，且横向对比GPU-Triton算子，训练后结果达到开源SOTA水准。
 
-<p align="center">
-  <img src="assets/frontier_bar.png" width="800" alt="DR.Kernel Performance">
-</p>
 
-Rate of generated kernels achieving at least a 1.2x speedup over the Torch reference on KernelBench across three level subsets. Dr.Kernel-14B is competitive with Claude-4.5-Sonnet and GPT-5, and applying sequential test-time scaling further improves Dr.Kernel-14B, surpassing both models on two of the three subsets.
+## 概述
+由于开源的权重在昇腾上无法生成高质量的算子，如果我们直接进行RL训练，则会由于一直采样不到正样本而导致实验失败。我们需要先进行SFT让模型具备一些基础的昇腾算子生成能力。整体的训练流程在Dr.kernel的基础上做了昇腾NPU的适配。此外，我们还搭建了数据合成的Pipeline合成高质量的SFT多轮轨迹数据集。
 
-## Overview
+## 数据集
+### 数据蒸馏
+我们通过 **LLM 多轮对话 + 沙箱验证** 的方式，自动循环五轮将 torch 算子代码改写为 Triton 算子代码，分为以下阶段：
 
-DR.Kernel introduces several key techniques for effective RL training on kernel generation tasks:
+**Round 1: 冷启动生成** 
 
-- **TRLOO (Turn-level REINFORCE Leave-One-Out)**: Unbiased advantage estimation for multi-turn RL by avoiding self-inclusion
-- **MRS (Multi-turn Rejection Sampling)**: Filters low-quality trajectories across turns to reduce reward hacking and lazy optimization
-- **Mismatch correction + dual-clip ratio clipping**: Stabilizes training under rollout–training policy mismatch and prevents extreme updates
-- **PR (Profiling-based Rewards)**: Uses profiling signals (e.g., speedup/coverage) for denser and more reliable rewards
-- **PRS (Profiling-based Rejection Sampling)**: Rejects candidates using profiling signals to encourage meaningful kernel fusion
+LLM 首次接触 PyTorch 代码，在没有先验反馈的情况下，独立完成分析和改写。
 
-The training pipeline is built on top of the [VERL](https://github.com/volcengine/verl) framework for distributed RL training.
+- 输入 PyTorch 源码，要求 LLM 分析计算逻辑并设计 Triton 优化方案
+- LLM 先思考优化策略，再输出完整的 Triton 实现
+- 从 LLM 响应中提取代码块并在沙箱中进行测试
 
-## Pitfalls We Found (and How We Address Them)
+**Round 2+: 反馈驱动迭代**
 
-In our paper, we found that naive RL for kernel generation can fail in a few recurring ways:
+从第二轮起，LLM 不再凭空生成，而是基于沙箱的客观验证反馈做有针对性的改进。
 
-- **Reward hacking**: The model exploits measurement loopholes (e.g., emitting a decoy kernel that is never called, or skipping real computation), inflating measured speedup without real optimization.
-- **Lazy optimization**: The model makes only trivial changes (e.g., accelerating a small sub-operation) while missing larger gains from kernel fusion.
-- **Biased multi-turn policy gradients**: In multi-turn settings, self-inclusion in GRPO can bias advantage estimation and destabilize learning.
+- 保留完整对话历史，LLM 可以回溯之前所有的尝试和结果
+- 沙箱反馈包含三个维度的信号，LLM 根据反馈自行判断当前问题，选择修复或优化策略。
 
-DR.Kernel mitigates these failure modes with KERNELGYM’s hacking checks + profiling, TRLOO for multi-turn advantages, and profiling-driven reward shaping / rejection sampling (PR / PRS / MRS).
+**终止策略**
 
-<p align="center">
-  <img src="assets/hacking_lazy.png" width="800" alt="Examples of reward hacking and lazy optimization">
-</p>
+达到最大轮数上限时停止，让 LLM 在通过后仍有机会继续优化性能。考虑到序列长度，我们目前共进行五轮对话。
 
-<p align="center">
-  <img src="assets/tradeoff_all_three.png" width="800" alt="Trade-off between hacking, correctness (Fast@1) and speedup (Fast@1.2)">
-</p>
 
-## Prerequisites
+## SFT数据合成
+经评估，与deepseek-v4-pro对话5轮的长度是可以控制在64K以内的，而5轮数据和8轮数据算子通过率仅差不到3%。因此我们主要合成了5轮的数据，再经过一系列清洗、过滤、shape泛化，当前这部分训练数据已开源。
 
-### 1. Install Dependencies
+## 前置条件
+### 1.创建环境
+```bash
+conda create -n your_env python=3.11
+conda activate your_env
+```
+
+### 2. 安装依赖
 
 ```bash
-cd drkernel
+cd sft
 bash setup.sh
 ```
 
-This will:
-- Initialize the VERL submodule
-- Install VERL and its dependencies
-- Install additional packages (vLLM, flash-attention, etc.)
+这将:
+- 安装torch与torch-npu
+- 初始化VERL子模块
+- 安装VERL及其依赖
+- 安装额外的包（vLLM、flash-attention等）
 
-### 2. Start KernelGYM Server
+## 训练
 
-**Important**: Before running any training or evaluation, you must have a KernelGYM server running to handle kernel evaluation requests.
-
-```bash
-# In the kernelgym root directory
-cd ..
-./start_all_with_monitor.sh
-```
-
-Set the server URL in your environment:
-```bash
-export KERNELGYM_SERVER_URL="http://<your-server-ip>:10907"
-```
-
-### 3. Minimal Run Checklist
-
-Before launching any script, make sure these are set (in script or env):
-
-- `KERNELGYM_SERVER_URL` (or `REWARD_SERVER_URL`) points to a healthy KernelGYM service
-- Model path is valid (`MODEL_PATH`, or `HDFS_MODEL_PATH + MODEL_NAME`)
-- Data paths are valid (`TRAIN_DATA_PATH`, `TRAIN_DATASET`, `VALID_DATASET`, `EVAL_DATASET`)
-- For non-8-GPU machines, adjust `NNODES` / `N_GPUS_PER_NODE` in eval scripts
-
-## Directory Structure
-
-```
-drkernel/
-├── kernel/
-│   ├── scripts/
-│   │   ├── rl/                    # RL training scripts
-│   │   │   ├── train_rl_common.sh # Common RL training logic
-│   │   │   ├── 8b_trloo_mrs_pr_prs.sh   # 8B model training
-│   │   │   └── 14b_trloo_mrs_pr_prs.sh  # 14B model training
-│   │   ├── eval/                  # Evaluation scripts
-│   │   │   ├── grading_common.sh  # Common evaluation logic
-│   │   │   ├── drkernel-14b-maxturns3.sh      # DR.Kernel-14B evaluation
-│   │   │   ├── drkernel-14b-maxturns5-maxiter10.sh  # Sequential test-time scaling
-│   │   │   ├── claude-4.5-sonnet-level2.sh    # OpenAI backend example
-│   │   │   └── claude-4.5-sonnet-level2-compile.sh  # torch.compile reference
-│   │   ├── sft/                   # SFT cold-start scripts
-│   │   │   ├── 8b-coldstart.sh    # 8B SFT training
-│   │   │   └── 14b-coldstart.sh   # 14B SFT training
-│   │   └── preprocess/            # Data preprocessing
-│   ├── rewards/                   # Reward functions
-│   ├── main_kernel.py             # Main RL training entry point
-│   └── main_grading.py            # Main evaluation entry point
-├── verl/                          # VERL framework (submodule)
-├── verl_patch/                    # Custom patches for VERL
-└── setup.sh                       # Installation script
-```
-
-## Training
-
-### SFT Cold Start
-
-Before RL training, we recommend a supervised fine-tuning (SFT) warm-up:
+### SFT 冷启动
 
 ```bash
-cd kernel/scripts/sft
-
-# For 8B model
-bash 8b-coldstart.sh
-
-# For 14B model
-bash 14b-coldstart.sh
+cd sft
+bash kernel/scripts/sft_run.sh
 ```
 
-**Configuration** (edit the script to set):
-```bash
-HDFS_MODEL_PATH=""        # Path to base model (e.g., Qwen3-14B-Base)
-HDFS_CHECKPOINT_PATH=""   # Where to save checkpoints
-TRAIN_DATA_PATH=""        # Path to SFT dataset (HuggingFace or local)
-```
-
-### RL Training (TRLOO + MRS + PR + PRS)
-
-Our full training recipe with all techniques enabled:
+### 配置项
 
 ```bash
-cd kernel/scripts/rl
+# sft_run.sh
+--train_batch_size          # 全局 Batch Size（所有 NPU 聚合后的 batch size）
+--micro_batch_size_per_gpu  # 单张 NPU 的 Micro Batch Size
+--max_length                # 训练样本最大序列长度（Token 数）
+--total_epochs              # 数据集训练轮数
+--dataset_name              # 数据集名称，用于实验标识和日志记录
+--train_data_path           # 训练数据文件路径（Parquet 格式）
+--model_name                # 基础模型名称,与下面的路径拼接使用
 
-# For 8B model
-bash 8b_trloo_mrs_pr_prs.sh
-
-# For 14B model
-bash 14b_trloo_mrs_pr_prs.sh
+## coldstart_30b.sh
+HDFS_MODEL_PATH=""        # 基座模型路径
+HDFS_CHECKPOINT_PATH=""   # 检查点保存路径
+TRAIN_DATA_PATH=""        # SFT 数据集路径
 ```
 
-**Required Configuration** (edit the script):
-```bash
-TRAIN_DATASET=("hkust-nlp/drkernel-rl-data")            # Resolved as ${HDFS_DATA_PATH}/hkust-nlp/drkernel-rl-data.parquet
-VALID_DATASET=("hkust-nlp/drkernel-validation-data")    # Resolved as ${HDFS_DATA_PATH}/hkust-nlp/drkernel-validation-data.parquet
-KERNELGYM_SERVER_URL="http://<server>:10907" # KernelGYM server URL
-MODEL_PATH="path/or/hf/model"                 # Preferred explicit model path (or HF model id)
-# Alternative legacy style:
-# HDFS_MODEL_PATH="/your/model/root"
-# MODEL_NAME="drkernel-14b-coldstart-stepXXX"
-HDFS_CHECKPOINT_PATH="/your/checkpoint/root"  # Training output directory
-```
+## 实验结果
 
-Path format note:
-- If `TRAIN_DATASET` / `VALID_DATASET` is not an absolute path, script resolves it as `${HDFS_DATA_PATH}/<name>.parquet`.
-- To use a local file directly, pass an absolute path (or a path ending with `.parquet`).
+以下实验结果基于两种标准进行评测：v1-standard 采用开源校验标准，精度阈值较为宽松（相对/绝对误差 1.00E-02），且允许算子实现中部分调用 torch 接口。v2-standard 则对齐工业级标准，要求纯 Triton 实现，禁止任何计算类 torch 接口调用（否则判定为作弊），并在精度校验上引入按 Dtype 区分的双指标（MERE & MARE）和 NPU 微小值截断公式，标准更为严格。
 
-**Key Training Parameters**:
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `ALGORITHM` | `trloo` | RL algorithm (trloo, grpo, rloo) |
-| `ENABLE_MULTI_TURN` | `True` | Enable multi-turn rollouts |
-| `MAX_TURN` | `3` | Maximum turns per episode |
-| `ROLLOUT_N` | `16` | Number of samples per prompt |
-| `TRAIN_BATCH_SIZE` | `16` | Training batch size |
-| `LEARNING_RATE` | `1e-6` | Learning rate |
-| `ROLLOUT_RS` | `geometric` | Rejection sampling strategy |
-| `COVERAGE_RS` | `turn` | Coverage-based rejection sampling |
-
-## Evaluation
-
-### Evaluate DR.Kernel Models
-
-```bash
-cd kernel/scripts/eval
-
-# Basic multi-turn evaluation (3 turns)
-bash drkernel-14b-maxturns3.sh
-
-# Sequential test-time scaling (5 turns x 10 iterations)
-bash drkernel-14b-maxturns5-maxiter10.sh
-```
-
-**Configuration**:
-```bash
-REWARD_SERVER_URL="http://<server>:10907"  # or export KERNELGYM_SERVER_URL
-EVAL_DATASET="your-eval-dataset"  # Evaluation dataset
-HF_MODEL_PATH="hkust-nlp/drkernel-14b"  # Model to evaluate
-# For non-8-GPU setups, edit script values:
-# NNODES=1
-# N_GPUS_PER_NODE=8
-```
-
-### Evaluate with OpenAI-Compatible APIs
-
-You can use any OpenAI-compatible API (OpenAI, Anthropic via proxy, etc.):
-
-```bash
-# Eager mode evaluation
-bash claude-4.5-sonnet-level2.sh
-
-# Compile mode evaluation (torch.compile reference)
-bash claude-4.5-sonnet-level2-compile.sh
-```
-
-**Configuration**:
-```bash
-BACKEND="openai"
-OPENAI_MODEL="anthropic/claude-sonnet-4.5"  # or "gpt-4o", etc.
-OPENAI_API_KEY="your-api-key"
-OPENAI_BASE_URL="https://api.openai.com/v1"  # or proxy URL
-REWARD_SERVER_URL="http://<server>:10907"    # or export KERNELGYM_SERVER_URL
-# Required by current eval scripts:
-HDFS_MODEL_PATH="/path/to/local/models"       # used to build ORIGINAL_MODEL path in script
-```
-
-### Torch Compile Reference Mode
-
-To evaluate against `torch.compile()` optimized baselines instead of eager PyTorch:
-
-```bash
-# Set in your eval script
-REFERENCE_BACKEND="torch_compile"
-```
-
-This enables fair comparison with compiled PyTorch references, which is important for assessing real-world kernel performance gains.
-
-### Sequential Test-Time Scaling
-
-DR.Kernel supports iterative refinement with context management:
-
-```bash
-# In drkernel-14b-maxturns5-maxiter10.sh
-MULTI_TURN=True
-MAX_USER_TURNS=5        # Turns per iteration
-
-MULTI_ITERATION=True
-MAX_ITERATIONS=10       # Number of iterations
-REMAIN_TURNS=4          # Context turns to keep
-ITERATION_METHOD="best" # Selection method
-BEST_SELECTION_METRIC="reward"
-```
-
-## Key Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `KERNELGYM_SERVER_URL` | URL of the KernelGYM evaluation server |
-| `REWARD_SERVER_URL` | Explicit reward/evaluation server URL (overrides `KERNELGYM_SERVER_URL`) |
-| `MODEL_PATH` | Explicit model path or HF model id for RL/eval scripts |
-| `HDFS_MODEL_PATH` | (Optional) Base path used when `MODEL_PATH` is not set |
-| `HDFS_CHECKPOINT_PATH` | Directory for training checkpoints |
-| `HDFS_DATA_PATH` | Base directory for RL parquet datasets |
-| `WANDB_API_KEY` | (Optional) Weights & Biases API key |
-
-## Datasets
-
-We provide the following datasets on HuggingFace:
-
-| Dataset | Description |
-|---------|-------------|
-| `hkust-nlp/drkernel-coldstart-8k` | SFT cold-start data |
-| `hkust-nlp/drkernel-rl-data` | RL training data |
-| `hkust-nlp/drkernel-validation-data` | Validation/evaluation data |
-
-## Models
-
-Pre-trained DR.Kernel models are available:
-
-| Model | HuggingFace |
-|-------|-------------|
-| DR.Kernel-8B | `hkust-nlp/drkernel-8b` |
-| DR.Kernel-14B | `hkust-nlp/drkernel-14b` |
-
-## Troubleshooting
-
-### Common Issues
-
-1. **KernelGYM connection failed**
-   ```bash
-   # Verify server is running
-   curl http://<server-ip>:10907/health
-   ```
-
-2. **CUDA OOM during training**
-   - Reduce `TRAIN_BATCH_SIZE` or `ROLLOUT_N`
-   - Enable `ACTOR_OPTIMIZER_OFFLOAD=True`
-   - Reduce `ROLLOUT_GPU_MEMORY_UTIL`
-
-3. **Slow evaluation**
-   - Increase `REWARD_MAX_CONCURRENT` (default: 32)
-   - Ensure KernelGYM has enough GPU workers
-
-4. **vLLM errors**
-   - Check CUDA compatibility with vLLM version
-   - Try `ROLLOUT_ENFORCE_EAGER=True` for debugging
-
-## Citation
-
-```bibtex
-@article{liuetal2026,
-  title={Dr.Kernel: Reinforcement Learning Done Right for Triton Kernel Generations},
-  author={Wei Liu, Jiawei Xu, Yingru Li, Longtao Zheng, Tianjian Li, Qian Liu, Junxian He},
-  journal={arXiv:2602.05885},
-  year={2026}
-}
-```
+<p align="center">
+  <img src="assets/kernelbench.png" width="800" alt="数据合成Pipeline流程图">
+</p>
