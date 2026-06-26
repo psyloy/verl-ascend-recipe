@@ -32,7 +32,7 @@ import torch
 import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
 import torch_npu
-from.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
+from .npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
 # from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 
 # try:
