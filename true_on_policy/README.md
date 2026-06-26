@@ -6,17 +6,17 @@
 
 ## 版本配套
 
-| 组件 | 版本 | 备注                     |
-| --- | --- |------------------------|
-| CANN | 9.0.0.B160（CANN900B160） |                        |
-| Python | 3.11 |                        |
-| PyTorch / torch_npu | 2.9.0 | 随 PTA B120             |
-| vLLM | 0.18.0 |                        |
-| vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配 |
-| Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                        |
-| MindSpeed | `core_r0.16.0` + [MR/3551](https://gitcode.com/Ascend/MindSpeed/merge_requests/3551) | TE 路径适配                |
-| verl | `release/v0.8.0` + [PR #6678](https://github.com/verl-project/verl/pull/6678) | PP 适配                  |
-| triton_ascend | 3.2.1 | CANN 9.0 需此版本          |
+| 组件 | 版本 | 备注                         |
+| --- | --- |----------------------------|
+| CANN | 9.0.0.B160（CANN900B160） |                            |
+| Python | 3.11 |                            |
+| PyTorch / torch_npu | 2.9.0 | 随 PTA B120                 |
+| vLLM | 0.18.0 |                            |
+| vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配     |
+| Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                            |
+| MindSpeed | `core_r0.16.0` |                            |
+| verl | `release/v0.8.0` 或 `main` | main可能会因为迭代重构的原因导致patch出问题 |
+| triton_ascend | 3.2.1 | CANN 9.0 需此版本              |
 
 ---
 
@@ -26,8 +26,18 @@
 true_on_policy/
 ├── README.md                 # 本文档
 ├── REQUIRED_VERL.txt         # verl 版本钉扎
+├── __init__.py               # Python 包标记
 ├── patch/
-│   └── npu_true_on_policy_patch.py
+│   ├── README.md                          # Patch 系统设计文档
+│   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口
+│   ├── apply_verl_source_patches.py       # 按 verl 版本自动选择并 git apply
+│   ├── verl_patch_selector.py             # 版本检测 + 上游特性检测
+│   ├── verl_patches/
+│   │   ├── verl_pr6732_npu_pp_v0.8.0.patch
+│   │   ├── verl_pr6732_npu_pp_main.patch
+│   │   └── verl_mindspeed_batch_invariant.patch
+│   ├── npu_true_on_policy_patch.py
+│   └── batch_invariant_ops.py
 └── scripts/
     ├── grpo/   run_grpo_qwen3_4b_megatron_npu.sh  run_grpo_qwen3_30b_megatron_npu.sh
     ├── gspo/   run_gspo_qwen3_4b_megatron_npu.sh  run_gspo_qwen3_30b_megatron_npu.sh
@@ -71,27 +81,23 @@ pip install setuptools==80.9.0
 ### 3. 训练栈（verl + MindSpeed + Megatron-LM）
 
 ```bash
-# verl（含 PP 适配 PR）
 git clone https://github.com/verl-project/verl.git
 cd verl
 git checkout release/v0.8.0
-git fetch origin pull/6678/head:pr-6678
-git merge pr-6678 --no-edit
 git submodule update --init --recursive recipe   # DAPO 等算法 recipe，见下文
+
+# 将本 recipe 放入 verl
+git clone https://github.com/verl-project/verl-ascend-recipe.git
+mkdir -p verl_ascend_recipe
+cp -r ../verl-ascend-recipe/true_on_policy verl_ascend_recipe/
+
 pip install -v -e .
 cd ..
-
-# 将本 recipe 放入 verl 树（训推 patch + 启动脚本）
-git clone https://github.com/verl-project/verl-ascend-recipe.git
-mkdir -p verl/verl_ascend_recipe
-cp -r verl-ascend-recipe/true_on_policy verl/verl_ascend_recipe/
 
 # MindSpeed
 git clone https://gitcode.com/Ascend/MindSpeed.git
 cd MindSpeed
 git checkout core_r0.16.0
-git fetch https://gitcode.com/Ascend/MindSpeed.git +refs/merge-requests/3551/head:pr_3551
-git merge pr_3551 --no-edit
 pip install -r requirements.txt
 pip install -v -e .
 cd ..
@@ -120,6 +126,7 @@ pip uninstall -y torch_c_dlpack_ext || true
 # 安装前 source CANN
 git clone https://github.com/MinghuasLab/flash-attention-npu.git
 cd flash-attention-npu
+git checkout trainlnferConsist
 git submodule update --init --recursive
 python setup.py install
 cd ..
@@ -129,12 +136,12 @@ cd ..
 
 按需下载对应平台的 `.run` 包并安装（安装前 source CANN）：
 
-| 平台 | 下载 |
-| --- | --- |
-| 910B aarch64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.aarch64.run |
-| 910B x86_64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.x86_64.run |
+| 平台         | 下载 |
+|------------| --- |
+| A2 aarch64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.aarch64.run |
+| A2 x86_64  | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-910b-1.0.0-linux.x86_64.run |
 | A3 aarch64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-A3-1.0.0-linux.aarch64.run |
-| A3 x86_64 | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-A3-1.0.0-linux.x86_64.run |
+| A3 x86_64  | https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/ops-batchinvariant/beta/20260611/cann-ops-batch_invariant-A3-1.0.0-linux.x86_64.run |
 
 ```bash
 chmod +x cann-ops-batch_invariant-*.run
@@ -158,8 +165,6 @@ Python 扩展包（`batch_invariant_ops` whl）：
 | GRPO / GSPO（4B） | `$HOME/data/gsm8k/train.parquet` | `$HOME/data/gsm8k/test.parquet` |
 | GRPO / GSPO（30B） | `$HOME/data/dapo-math-17k.parquet` | 同训练集 |
 | DAPO | `$HOME/data/dapo-math-17k.parquet` | `$HOME/data/aime-2024.parquet` |
-
-DAPO 数据可参考上游 `recipe/dapo/prepare_dapo_data.sh`（需先初始化 `recipe` submodule，见下节）。
 
 ---
 
@@ -194,7 +199,7 @@ python3 -m recipe.dapo.main_dapo --config-name=dapo_megatron_trainer ...
 ```bash
 conda activate verl_main
 source ${ASCEND_HOME}/set_env.sh          # CANN
-# source ${ASCEND_HOME}/../nnal/atb/set_env.sh   # 若使用 ATB，按实际路径调整
+source ${ASCEND_HOME}/../nnal/atb/set_env.sh
 cd verl                                   # verl 仓库根目录
 ```
 
@@ -213,18 +218,18 @@ export NGPUS_PER_NODE=16                         # 单机 NPU 数
 
 ```bash
 # GRPO — Qwen3-4B dense
-bash verl_ascend_recipe/true_on_policy/scripts/grpo/4b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
 
 # GRPO — Qwen3-30B-A3B MoE
-bash verl_ascend_recipe/true_on_policy/scripts/grpo/30b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_30b_megatron_npu.sh
 
 # GSPO — Qwen3-4B / 30B
-bash verl_ascend_recipe/true_on_policy/scripts/gspo/4b.sh
-bash verl_ascend_recipe/true_on_policy/scripts/gspo/30b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/gspo/run_gspo_qwen3_4b_megatron_npu.sh
+bash verl_ascend_recipe/true_on_policy/scripts/gspo/run_gspo_qwen3_30b_megatron_npu.sh
 
 # DAPO — Qwen3-4B / 30B（需先 `git submodule update --init --recursive recipe`）
-bash verl_ascend_recipe/true_on_policy/scripts/dapo/4b.sh
-bash verl_ascend_recipe/true_on_policy/scripts/dapo/30b.sh
+bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_4b_megatron_npu.sh
+bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_30b_megatron_npu.sh
 ```
 
 各算法训练入口：
@@ -236,17 +241,17 @@ bash verl_ascend_recipe/true_on_policy/scripts/dapo/30b.sh
 
 ### 4. 训推一致性开关
 
-所有脚本默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
+默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
 
 ```bash
-ENABLE_TRUE_ON_POLICY=0 bash verl_ascend_recipe/true_on_policy/scripts/grpo/4b.sh
+ENABLE_TRUE_ON_POLICY=0 bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
 ```
 
 开启时会同时生效：
 
 | 层级 | 机制 |
 | --- | --- |
-| Rollout（vLLM） | `VLLM_BATCH_INVARIANT=1` + `VERL_USE_EXTERNAL_MODULES` 加载 `npu_patch` |
+| Rollout（vLLM） | 同上入口加载 `npu_true_on_policy_patch` + `VLLM_BATCH_INVARIANT=1` |
 | 训练（Megatron） | MindSpeed `batch_invariant_mode` / `use_batch_invariant_ops` 等 Hydra 参数 |
 
 ---
