@@ -85,5 +85,5 @@ TRAIN_DATA_PATH=""        # SFT 数据集路径
 以下实验结果基于两种标准进行评测：v1-standard 采用开源校验标准，精度阈值较为宽松（相对/绝对误差 1.00E-02），且允许算子实现中部分调用 torch 接口。v2-standard 则对齐工业级标准，要求纯 Triton 实现，禁止任何计算类 torch 接口调用（否则判定为作弊），并在精度校验上引入按 Dtype 区分的双指标（MERE & MARE）和 NPU 微小值截断公式，标准更为严格。
 
 <p align="center">
-  <img src="assets/kernelbench.png" width="800" alt="数据合成Pipeline流程图">
+  <img src="assets/kernelbench.png" width="400" alt="kernelbench评测">
 </p>
