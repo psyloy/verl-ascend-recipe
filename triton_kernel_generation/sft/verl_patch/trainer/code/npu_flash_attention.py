@@ -15,10 +15,6 @@ import os
 import torch
 import torch.nn.functional as F
 
-# from ..utils.import_utils import is_torch_npu_available
-
-
-# if is_torch_npu_available():
 import math
 
 import torch_npu
@@ -46,10 +42,6 @@ def get_attn_mask_npu(device):
     if device not in ATTN_MASK_NPU_CACHE:
         ATTN_MASK_NPU_CACHE[device] = torch.triu(torch.ones([2048, 2048], device=device), diagonal=1).bool()
     return ATTN_MASK_NPU_CACHE[device]
-
-
-def is_npu_fa2_top_left_aligned_causal_mask():
-    return SPARSE_MODE == TOP_LEFT_ALIGNED_CAUSAL_MASK_MODE if is_torch_npu_available() else False
 
 
 # Copied from https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/bert_padding.py
