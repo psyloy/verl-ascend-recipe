@@ -53,7 +53,7 @@ TRAIN_FILE="/data/gsm8k/train.parquet"
 TEST_FILE="/data/gsm8k/test.parquet"
 
 # Performance and Memory Management Configuration
-enforce_eager=True
+enforce_eager=False
 use_dynamic_bsz=True
 enable_chunked_prefill=True
 train_ppo_micro_batch_size_per_gpu=2
