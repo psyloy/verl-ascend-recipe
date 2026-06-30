@@ -443,16 +443,6 @@ def select_all_to_all_moe_comm_method_train_infer_consistent(
     return MoECommType.ALLTOALL
 
 
-def _patch_vllm_ascend_batch_invariance_entry() -> None:
-    """Replace vLLM Ascend batch-invariance init entry."""
-
-    import vllm_ascend.batch_invariant as batch_invariant
-
-    from .batch_invariant_ops import init_batch_invariance_replace
-
-    batch_invariant.init_batch_invariance = init_batch_invariance_replace
-
-
 def apply_batch_consistency_patches() -> None:
     """Apply batch-consistency monkey patches for vLLM Ascend."""
 
@@ -467,5 +457,3 @@ def apply_batch_consistency_patches() -> None:
     Sampler.compute_logprobs = compute_logprobs_from_logits_train_infer_consistent
     RowParallelLinear.forward = run_row_parallel_linear_with_padded_reduce_scatter_train_infer_consistent
     ascend_forward_context.select_moe_comm_method = select_all_to_all_moe_comm_method_train_infer_consistent
-
-    _patch_vllm_ascend_batch_invariance_entry()

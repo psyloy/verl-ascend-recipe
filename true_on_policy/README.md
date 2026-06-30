@@ -31,13 +31,15 @@ true_on_policy/
 │   ├── README.md                          # Patch 系统设计文档
 │   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口
 │   ├── apply_verl_source_patches.py       # 按 verl 版本自动选择并 git apply
+│   ├── apply_vllm_ascend_source_patches.py # vllm-ascend batch_invariant 源码 patch
 │   ├── verl_patch_selector.py             # 版本检测 + 上游特性检测
 │   ├── verl_patches/
 │   │   ├── verl_pr6732_npu_pp_v0.8.0.patch
 │   │   ├── verl_pr6732_npu_pp_main.patch
 │   │   └── verl_mindspeed_batch_invariant.patch
-│   ├── npu_true_on_policy_patch.py
-│   └── batch_invariant_ops.py
+│   ├── vllm_ascend_patches/
+│   │   └── vllm_ascend_batch_invariant.patch
+│   └── npu_true_on_policy_patch.py
 └── scripts/
     ├── grpo/   run_grpo_qwen3_4b_megatron_npu.sh  run_grpo_qwen3_30b_megatron_npu.sh
     ├── gspo/   run_gspo_qwen3_4b_megatron_npu.sh  run_gspo_qwen3_30b_megatron_npu.sh
