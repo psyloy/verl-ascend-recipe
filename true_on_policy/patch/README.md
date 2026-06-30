@@ -47,10 +47,14 @@ flowchart TB
         MS["MindSpeed batch-invariant patch"]
     end
 
+    subgraph layer1b [Layer 1b: vllm-ascend 源码 patch]
+        VAPPLY["apply_vllm_ascend_source_patches.py"]
+        BIPATCH["vllm_ascend_batch_invariant.patch"]
+    end
+
     subgraph layer2 [Layer 2: vLLM 运行时 patch]
         RUNTIME["npu_true_on_policy_patch.py"]
         BI_ENV["VLLM_BATCH_INVARIANT=1"]
-        BI_OPS["batch_invariant_ops.py"]
     end
 
     subgraph layer3 [Layer 3: Megatron 训练侧]
@@ -61,15 +65,17 @@ flowchart TB
     IMPORT --> SEL --> APPLY
     APPLY --> PP
     APPLY --> MS
+    IMPORT --> VAPPLY --> BIPATCH
     IMPORT --> RUNTIME
-    RUNTIME --> BI_ENV --> BI_OPS
+    RUNTIME --> BI_ENV
     HYDRA -.->|"scripts/*.sh 注入"| layer3
 ```
 
 | 层级 | 作用对象 | 解决的问题 |
 | --- | --- | --- |
 | Layer 1 | verl 框架源码 | NPU 上 vLLM PP 可启动；MindSpeed repatch 与 FA3 不冲突 |
-| Layer 2 | vLLM-Ascend 推理 | MoE / logprob / TP 等数值路径与训练侧对齐 |
+| Layer 1b | vLLM-Ascend 源码 | `batch_invariant.py` 使用 AscendC batch-invariant 算子（训推对齐） |
+| Layer 2 | vLLM-Ascend 推理 runtime | MoE / logprob / TP 等数值路径与训练侧对齐 |
 | Layer 3 | MindSpeed 训练配置 | 训练侧启用 batch-invariant 路径（由启动脚本 Hydra 参数控制） |
 
 ---
@@ -85,16 +91,18 @@ export VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch
 verl 在 `verl/__init__.py` 中通过 `importlib.import_module()` 加载该模块，触发 `patch/__init__.py`：
 
 ```python
-apply_verl_source_patches()      # Layer 1：先改 verl 源码
-apply_batch_consistency_patches() # Layer 2：再 patch vLLM-Ascend
+apply_verl_source_patches()        # Layer 1：改 verl 源码
+apply_vllm_ascend_source_patches() # Layer 1b：改 vllm-ascend 源码（batch_invariant.py）
+apply_batch_consistency_patches()  # Layer 2：vLLM-Ascend runtime monkey patch
 ```
 
-**必须先 Layer 1 后 Layer 2**：后续 import 的 verl rollout 模块会依赖 patch 后的源码（如 `ensure_rollout_config`）。
+**必须先 Layer 1 / 1b 后 Layer 2**：后续 import 的 rollout 模块依赖 patch 后源码；batch-invariant 由源码 patch 直接写入 `vllm_ascend/batch_invariant.py`，不再做运行时替换。
 
 ### 前置条件
 
 - recipe 已复制到 `verl/verl_ascend_recipe/true_on_policy/`
 - 在 **verl 仓库根目录** 启动训练（使 `verl_ascend_recipe` 在 `sys.path` 上）
+- vLLM-Ascend 源码在 `../vllm-ascend`（与 verl 同级）或设置 `VLLM_ASCEND_ROOT`
 
 ---
 
@@ -173,17 +181,26 @@ git apply             →  写入 verl 源码树
 | `Sampler.compute_logprobs` | 稳定 log-softmax | logprob 数值对齐 |
 | `RowParallelLinear.forward` | padding + reduce_scatter/all_gather | TP 线性层对齐 |
 | `ascend_forward_context.select_moe_comm_method` | 强制 `ALLTOALL` | MoE 通信方式对齐 |
-| `vllm_ascend.batch_invariant.init_batch_invariance` | 指向本目录 `batch_invariant_ops` | 接管 batch-invariant 初始化 |
 
-### batch-invariant 算子（`batch_invariant_ops.py`）
+batch-invariant 算子注册见 **Layer 1b**（`vllm_ascend/batch_invariant.py` 源码 patch），不在此 runtime 层处理。
 
-当 `VLLM_BATCH_INVARIANT=1`（训练脚本在 `ENABLE_TRUE_ON_POLICY=1` 时设置）时：
+### Layer 1b：vLLM-Ascend `batch_invariant.py` 源码 patch
+
+`apply_vllm_ascend_source_patches.py` 对 vLLM-Ascend 仓库执行幂等 `git apply`：
+
+| 文件 | Patch |
+| --- | --- |
+| `vllm_ascend/batch_invariant.py` | `vllm_ascend_patches/vllm_ascend_batch_invariant.patch` |
+
+特性检测：文件已含 `BatchInvariantSumFunction` 则跳过。
+
+当 `VLLM_BATCH_INVARIANT=1` 时，`init_batch_invariance()` 会：
 
 1. 设置确定性环境变量（`HCCL_DETERMINISTIC=strict` 等）
-2. 在 NPU 上注册 batch-invariant 版 ATen 算子：`mm`、`matmul`、`sum`、`softmax`、`log_softmax`
+2. 在 NPU 上注册 batch-invariant 版 ATen 算子：`mm`、`matmul`、`sum`、`log_softmax`
 3. 替换 `torch_npu.npu_add_rms_norm`
 
-使相同输入在不同 batch 形状下结果一致，是训推对齐的底层保障。
+需安装 CANN `batch_invariant_ops` Python whl。vLLM `mp` worker 子进程直接 import 已 patch 的 `vllm_ascend.batch_invariant`，无需运行时 hook。
 
 ---
 
@@ -212,8 +229,9 @@ Layer 3 不在 `patch/` 代码内实现，由 `scripts/*.sh` 在 `ENABLE_TRUE_ON
 3. python -m verl.trainer.main_ppo 或 recipe.dapo.main_dapo
 4. import verl
 5. import verl_ascend_recipe.true_on_policy.patch
-   5a. apply_verl_source_patches()   — 版本检测 + git apply
-   5b. apply_batch_consistency_patches() — monkey patch vLLM
+   5a. apply_verl_source_patches()   — verl 版本检测 + git apply
+   5b. apply_vllm_ascend_source_patches() — vllm-ascend batch_invariant.py
+   5c. apply_batch_consistency_patches() — MoE / logprob runtime patch
 6. verl 加载 rollout / actor / trainer（已是 patch 后代码）
 7. Hydra 解析 Megatron batch-invariant 训练配置
 8. Rollout 采样 + Training 算 logprob → RL 更新
@@ -227,12 +245,14 @@ Layer 3 不在 `patch/` 代码内实现，由 `scripts/*.sh` 在 `ENABLE_TRUE_ON
 patch/
 ├── README.md                          # 本文档
 ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口
-├── apply_verl_source_patches.py       # Layer 1：git apply 编排
+├── apply_verl_source_patches.py       # Layer 1：verl git apply 编排
+├── apply_vllm_ascend_source_patches.py # Layer 1b：vllm-ascend git apply
 ├── verl_patch_selector.py             # Layer 1：版本与特性检测
 ├── verl_patches/
 │   ├── verl_pr6732_npu_pp_v0.8.0.patch
 │   ├── verl_pr6732_npu_pp_main.patch
 │   └── verl_mindspeed_batch_invariant.patch
+├── vllm_ascend_patches/
+│   └── vllm_ascend_batch_invariant.patch
 ├── npu_true_on_policy_patch.py        # Layer 2：vLLM runtime monkey patch
-└── batch_invariant_ops.py             # Layer 2：batch-invariant 算子注册
 ```
