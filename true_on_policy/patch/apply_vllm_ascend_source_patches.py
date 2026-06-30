@@ -75,8 +75,7 @@ def _apply_patch_file(repo_root: Path, patch_file: Path) -> None:
 
     if not _git_apply_check(repo_root, patch_file):
         raise RuntimeError(
-            f"[true_on_policy] vllm-ascend patch does not apply cleanly: {patch_file.name} "
-            f"(tree at {repo_root})."
+            f"[true_on_policy] vllm-ascend patch does not apply cleanly: {patch_file.name} (tree at {repo_root})."
         )
 
     subprocess.run(
