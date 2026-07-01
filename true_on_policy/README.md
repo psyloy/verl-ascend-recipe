@@ -34,11 +34,14 @@ true_on_policy/
 │   ├── apply_vllm_ascend_source_patches.py # vllm-ascend batch_invariant 源码 patch
 │   ├── verl_patch_selector.py             # 版本检测 + 上游特性检测
 │   ├── verl_patches/
-│   │   ├── verl_pr6732_npu_pp_v0.8.0.patch
-│   │   ├── verl_pr6732_npu_pp_main.patch
-│   │   └── verl_mindspeed_batch_invariant.patch
+│   │   ├── verl_npu_pp_per_request_seed_v0.8.0.patch
+│   │   ├── verl_npu_pp_per_request_seed_main.patch
+│   │   ├── verl_mindspeed_batch_invariant.patch
+│   │   ├── verl_per_request_seed_v0.8.0.patch   # PP 已 upstream 时的 seed 增量
+│   │   └── verl_per_request_seed_main.patch
 │   ├── vllm_ascend_patches/
 │   │   └── vllm_ascend_batch_invariant.patch
+│   ├── per_request_seed.md
 │   └── npu_true_on_policy_patch.py
 └── scripts/
     ├── grpo/   run_grpo_qwen3_4b_megatron_npu.sh  run_grpo_qwen3_30b_megatron_npu.sh
@@ -89,7 +92,7 @@ git checkout release/v0.8.0
 git submodule update --init --recursive recipe   # DAPO 等算法 recipe，见下文
 
 # 将本 recipe 放入 verl
-git clone https://github.com/verl-project/verl-ascend-recipe.git
+git clone https://github.com/verl-project/verl-ascend-recipe.git ../verl-ascend-recipe
 mkdir -p verl_ascend_recipe
 cp -r ../verl-ascend-recipe/true_on_policy verl_ascend_recipe/
 
@@ -241,19 +244,39 @@ bash verl_ascend_recipe/true_on_policy/scripts/dapo/run_dapo_qwen3_30b_megatron_
 | `scripts/grpo/`、`scripts/gspo/` | `verl.trainer.main_ppo` |
 | `scripts/dapo/` | `recipe.dapo.main_dapo` |
 
-### 4. 训推一致性开关
+### 4. 训推一致性与 Rollout 随机种子
 
-默认 **开启** 训推一致性（`ENABLE_TRUE_ON_POLICY=1`）。关闭后可做 baseline 对比：
+所有 `scripts/{grpo,gspo,dapo}/*.sh` 支持以下环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ENABLE_TRUE_ON_POLICY` | `1` | 开启训推一致性；为 `1` 时设置 `VLLM_BATCH_INVARIANT=1` |
+| `ROLLOUT_PER_REQUEST_SEED` | 跟随 `ENABLE_TRUE_ON_POLICY` | 是否为每条 rollout 请求设置独立随机种子 |
+| `ROLLOUT_SEED` | `42` | 上述功能开启时使用的基础 seed |
+
+关闭训推一致性、做 baseline 对比：
 
 ```bash
 ENABLE_TRUE_ON_POLICY=0 bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
 ```
 
-开启时会同时生效：
+单独控制 per-request seed（训推一致性关闭时也可启用）：
+
+```bash
+# 显式开启 per-request seed
+ROLLOUT_PER_REQUEST_SEED=true ROLLOUT_SEED=42 \
+  bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
+
+# 训推一致性关闭，但保留 per-request seed
+ENABLE_TRUE_ON_POLICY=0 ROLLOUT_PER_REQUEST_SEED=true \
+  bash verl_ascend_recipe/true_on_policy/scripts/grpo/run_grpo_qwen3_4b_megatron_npu.sh
+```
+
+`ENABLE_TRUE_ON_POLICY=1` 时会同时生效：
 
 | 层级 | 机制 |
 | --- | --- |
-| Rollout（vLLM） | 同上入口加载 `npu_true_on_policy_patch` + `VLLM_BATCH_INVARIANT=1` |
+| Rollout（vLLM） | 入口加载 `npu_true_on_policy_patch` + `VLLM_BATCH_INVARIANT=1` |
 | 训练（Megatron） | MindSpeed `batch_invariant_mode` / `use_batch_invariant_ops` 等 Hydra 参数 |
 
 ---

@@ -2,6 +2,8 @@
 # GRPO | Qwen3-30B-A3B (MoE) | vLLM rollout | Megatron training | Ascend NPU
 # Knobs:
 #   ENABLE_TRUE_ON_POLICY=1  enable train-infer consistency (true on-policy)
+#   ROLLOUT_PER_REQUEST_SEED=true|false  enable per-request rollout seed (default: follows ENABLE_TRUE_ON_POLICY)
+#   ROLLOUT_SEED=42  base seed used when per-request rollout seed is enabled
 
 set -xeuo pipefail
 
@@ -25,6 +27,16 @@ ENABLE_TRUE_ON_POLICY=${ENABLE_TRUE_ON_POLICY:-1}
 if [ "${ENABLE_TRUE_ON_POLICY}" = "1" ]; then
     export VLLM_BATCH_INVARIANT=1
 fi
+rollout_per_request_seed_raw=${ROLLOUT_PER_REQUEST_SEED:-${ENABLE_TRUE_ON_POLICY}}
+case "${rollout_per_request_seed_raw}" in
+    1 | true | True | TRUE | yes | Yes | YES) rollout_per_request_seed=true ;;
+    0 | false | False | FALSE | no | No | NO) rollout_per_request_seed=false ;;
+    *)
+        echo "ROLLOUT_PER_REQUEST_SEED must be true/false or 1/0, got: ${rollout_per_request_seed_raw}" >&2
+        exit 1
+        ;;
+esac
+rollout_seed=${ROLLOUT_SEED:-42}
 
 # ---- user-adjustable ----
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-30B-A3B-Instruct-2507}
@@ -119,6 +131,7 @@ ROLLOUT=(
     actor_rollout_ref.rollout.tensor_model_parallel_size=${rollout_tp}
     actor_rollout_ref.rollout.gpu_memory_utilization=${rollout_gpu_mem_util}
     actor_rollout_ref.rollout.n=${rollout_n}
+    actor_rollout_ref.rollout.per_request_seed=${rollout_per_request_seed}
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${ppo_max_token_len_per_gpu}
     actor_rollout_ref.rollout.val_kwargs.n=1
@@ -129,6 +142,9 @@ ROLLOUT=(
     actor_rollout_ref.rollout.free_cache_engine=True
     +actor_rollout_ref.rollout.engine_kwargs.vllm.pipeline_parallel_size=${rollout_pp}
 )
+if [ "${rollout_per_request_seed}" = "true" ] || [ -n "${ROLLOUT_SEED:-}" ]; then
+    ROLLOUT+=(actor_rollout_ref.rollout.seed=${rollout_seed})
+fi
 
 REF=(
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True

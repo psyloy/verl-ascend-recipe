@@ -43,8 +43,9 @@ flowchart TB
     subgraph layer1 [Layer 1: verl 源码 patch]
         SEL["verl_patch_selector.py"]
         APPLY["apply_verl_source_patches.py"]
-        PP["PR #6732 PP patch（按版本）"]
+        COMBINED["NPU PP + per-request seed patch（按版本，合并）"]
         MS["MindSpeed batch-invariant patch"]
+        SEED_FB["per-request seed 增量 patch（PP 已 upstream 时）"]
     end
 
     subgraph layer1b [Layer 1b: vllm-ascend 源码 patch]
@@ -63,8 +64,9 @@ flowchart TB
 
     ENV --> IMPORT
     IMPORT --> SEL --> APPLY
-    APPLY --> PP
+    APPLY --> COMBINED
     APPLY --> MS
+    APPLY --> SEED_FB
     IMPORT --> VAPPLY --> BIPATCH
     IMPORT --> RUNTIME
     RUNTIME --> BI_ENV
@@ -73,7 +75,7 @@ flowchart TB
 
 | 层级 | 作用对象 | 解决的问题 |
 | --- | --- | --- |
-| Layer 1 | verl 框架源码 | NPU 上 vLLM PP 可启动；MindSpeed repatch 与 FA3 不冲突 |
+| Layer 1 | verl 框架源码 | NPU 上 vLLM PP 可启动；MindSpeed repatch 与 FA3 不冲突；per-request rollout seed |
 | Layer 1b | vLLM-Ascend 源码 | `batch_invariant.py` 使用 AscendC batch-invariant 算子（训推对齐） |
 | Layer 2 | vLLM-Ascend 推理 runtime | MoE / logprob / TP 等数值路径与训练侧对齐 |
 | Layer 3 | MindSpeed 训练配置 | 训练侧启用 batch-invariant 路径（由启动脚本 Hydra 参数控制） |
@@ -96,7 +98,7 @@ apply_vllm_ascend_source_patches() # Layer 1b：改 vllm-ascend 源码（batch_i
 apply_batch_consistency_patches()  # Layer 2：vLLM-Ascend runtime monkey patch
 ```
 
-**必须先 Layer 1 / 1b 后 Layer 2**：后续 import 的 rollout 模块依赖 patch 后源码；batch-invariant 由源码 patch 直接写入 `vllm_ascend/batch_invariant.py`，不再做运行时替换。
+**必须先 Layer 1 / 1b 后 Layer 2**：`patch/__init__.py` 会先 `git apply` verl / vllm-ascend 源码，再 import `npu_true_on_policy_patch`（避免提前加载未 patch 的 `verl.workers.config.rollout`）。后续 import 的 rollout 模块依赖 patch 后源码；batch-invariant 由源码 patch 直接写入 `vllm_ascend/batch_invariant.py`，不再做运行时替换。
 
 ### 前置条件
 
@@ -116,7 +118,7 @@ apply_batch_consistency_patches()  # Layer 2：vLLM-Ascend runtime monkey patch
 | `apply_verl_source_patches.py` | 对选中 patch 执行幂等 `git apply` |
 | `verl_patches/*.patch` | 各版本/组件的具体 diff |
 
-### 4.2 两类源码 patch
+### 4.2 三类源码 patch
 
 #### A. PP 支持
 
@@ -135,23 +137,34 @@ Patch 内容概要：
 - 启用 `use_flash_attn_npu_batch_invariant` 时关闭 `use_flash_attn`
 - 避免与 flash-attn-npu 的 `DotProductAttention.forward` patch 冲突（报错 "the patch of forward exist"）
 
+#### C. Per-request rollout seed
+
+为 verl 增加 `actor_rollout_ref.rollout.per_request_seed`，在 agent loop 向 vLLM 发请求前为每条 stochastic 生成请求派生 `SamplingParams.seed`。功能动机、seed 公式、与训推一致性的关系见 **[per_request_seed.md](./per_request_seed.md)**。
+
+启动脚本通过 `ROLLOUT_PER_REQUEST_SEED`、`ROLLOUT_SEED` 注入 Hydra 参数；用法见上级 [README.md](../README.md) §4。
+
 ### 4.3 版本检测与 patch 选择
 
 ```
 读取 verl/verl/version/version
         ↓
-PP patch 需要吗？
-├── rollout.py 已含 ensure_rollout_config → 跳过（upstream 已合入）
-└── 否则
-    ├── 0.8.x → verl_patches/verl_pr6732_npu_pp_v0.8.0.patch
-    └── 其他（main 等）→ verl_patches/verl_pr6732_npu_pp_main.patch
+PP + per-request seed 需要吗？
+├── rollout.py 已含 ensure_rollout_config 且 utils.py 已含 maybe_apply_per_request_seed
+│   → 跳过（upstream 已合入）
+├── 仅 PP 已 upstream（ensure_rollout_config 有、maybe_apply_per_request_seed 无）
+│   └── 仅 apply verl_per_request_seed_*.patch（seed 增量）
+└── 否则（常见：两者皆无）
+    ├── 0.8.x → verl_patches/verl_npu_pp_per_request_seed_v0.8.0.patch
+    └── 其他（main 等）→ verl_patches/verl_npu_pp_per_request_seed_main.patch
 
 MindSpeed patch 需要吗？
 ├── transformer_impl.py 已含 use_flash_attn_npu_batch_invariant → 跳过
 └── 否则 → verl_patches/verl_mindspeed_batch_invariant.patch
 ```
 
-**为何分两个 PP patch**：`release/v0.8.0` 与 `main` 同文件行号/上下文不同，需各备一份 diff。
+**为何 PP+seed 合并为单一 patch**：两者改动交叉同一批 rollout 文件，分步 `git apply` 易因上下文漂移失败；合并后一次 apply 更稳定。
+
+**为何仍备两份 branch patch**：`release/v0.8.0` 与 `main` 同文件行号/上下文不同，需各备一份 diff。
 
 **特性检测优先于版本号**：PR 合入 upstream 后，即使版本号未变，也会自动跳过已合入的 patch。
 
@@ -217,7 +230,9 @@ Layer 3 不在 `patch/` 代码内实现，由 `scripts/*.sh` 在 `ENABLE_TRUE_ON
 
 配合外部依赖：flash-attention-npu（`trainlnferConsist` 分支）、CANN batch_invariant 算子及 Python whl。
 
-`ENABLE_TRUE_ON_POLICY=0` 时关闭 Layer 3 与 `VLLM_BATCH_INVARIANT`；Layer 1 / Layer 2 仍会加载（PP 等基础能力仍需要）。
+`scripts/*.sh` 还会根据 `ROLLOUT_PER_REQUEST_SEED`、`ROLLOUT_SEED` 注入 `actor_rollout_ref.rollout.per_request_seed` 与 `actor_rollout_ref.rollout.seed`（默认前者跟随 `ENABLE_TRUE_ON_POLICY`）。Layer 1 的 per-request seed patch 提供 verl 侧实现；开关用法见上级 [README.md](../README.md) §4。
+
+`ENABLE_TRUE_ON_POLICY=0` 时关闭 Layer 3 与 `VLLM_BATCH_INVARIANT`；Layer 1 / Layer 2 仍会加载（PP 等基础能力仍需要）。per-request seed 可单独开启，不依赖训推一致性。
 
 ---
 
@@ -225,15 +240,16 @@ Layer 3 不在 `patch/` 代码内实现，由 `scripts/*.sh` 在 `ENABLE_TRUE_ON
 
 ```
 1. 用户在 verl 根目录执行 scripts/grpo|gspo|dapo/*.sh
-2. 导出 VERL_USE_EXTERNAL_MODULES、VLLM_BATCH_INVARIANT=1（默认）
+2. 导出 VERL_USE_EXTERNAL_MODULES；默认 ENABLE_TRUE_ON_POLICY=1 → VLLM_BATCH_INVARIANT=1
+   默认 ROLLOUT_PER_REQUEST_SEED 跟随 ENABLE_TRUE_ON_POLICY，ROLLOUT_SEED=42
 3. python -m verl.trainer.main_ppo 或 recipe.dapo.main_dapo
 4. import verl
 5. import verl_ascend_recipe.true_on_policy.patch
-   5a. apply_verl_source_patches()   — verl 版本检测 + git apply
+   5a. apply_verl_source_patches()   — verl 版本检测 + git apply（含 per-request seed）
    5b. apply_vllm_ascend_source_patches() — vllm-ascend batch_invariant.py
    5c. apply_batch_consistency_patches() — MoE / logprob runtime patch
 6. verl 加载 rollout / actor / trainer（已是 patch 后代码）
-7. Hydra 解析 Megatron batch-invariant 训练配置
+7. Hydra 解析 Megatron batch-invariant 训练配置及 rollout.per_request_seed / seed
 8. Rollout 采样 + Training 算 logprob → RL 更新
 ```
 
@@ -244,14 +260,17 @@ Layer 3 不在 `patch/` 代码内实现，由 `scripts/*.sh` 在 `ENABLE_TRUE_ON
 ```
 patch/
 ├── README.md                          # 本文档
+├── per_request_seed.md                # Per-request seed 功能技术说明
 ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口
 ├── apply_verl_source_patches.py       # Layer 1：verl git apply 编排
 ├── apply_vllm_ascend_source_patches.py # Layer 1b：vllm-ascend git apply
 ├── verl_patch_selector.py             # Layer 1：版本与特性检测
 ├── verl_patches/
-│   ├── verl_pr6732_npu_pp_v0.8.0.patch
-│   ├── verl_pr6732_npu_pp_main.patch
-│   └── verl_mindspeed_batch_invariant.patch
+│   ├── verl_npu_pp_per_request_seed_v0.8.0.patch
+│   ├── verl_npu_pp_per_request_seed_main.patch
+│   ├── verl_mindspeed_batch_invariant.patch
+│   ├── verl_per_request_seed_v0.8.0.patch      # fallback：PP 已 upstream 时仅补 seed
+│   └── verl_per_request_seed_main.patch
 ├── vllm_ascend_patches/
 │   └── vllm_ascend_batch_invariant.patch
 ├── npu_true_on_policy_patch.py        # Layer 2：vLLM runtime monkey patch
