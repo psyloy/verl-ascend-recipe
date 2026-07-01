@@ -10,17 +10,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
 
 import torch
 import torch.nn.functional as F
-
-import math
-
 import torch_npu
 from einops import rearrange, repeat
 from torch_npu import npu_rotary_mul
-
 
 # FlashAttention2 is supported on Ascend NPU with down-right aligned causal mask by default.
 # Set environment variable `NPU_FA2_SPARSE_MODE` to 2 when using top-left aligned causal mask.
@@ -54,9 +51,9 @@ class IndexFirstAxis(torch.autograd.Function):
         second_dim = other_shape.numel()
         # TD [2022-03-04] For some reason torch.gather is a bit faster than indexing.
         # return input[indices]
-        return torch.gather(
-            rearrange(input, "b ... -> b (...)"), 0, repeat(indices, "z -> z d", d=second_dim)
-        ).reshape(-1, *other_shape)
+        return torch.gather(rearrange(input, "b ... -> b (...)"), 0, repeat(indices, "z -> z d", d=second_dim)).reshape(
+            -1, *other_shape
+        )
 
     @staticmethod
     def backward(ctx, grad_output):

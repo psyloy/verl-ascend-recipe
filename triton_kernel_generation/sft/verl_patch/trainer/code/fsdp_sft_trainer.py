@@ -1,5 +1,5 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
-#bert_paddingpad_input
+# bert_paddingpad_input
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -25,16 +25,15 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 import logging
 import re
-from contextlib import nullcontext
 import time  # 在原有 imports 后添加
+from contextlib import nullcontext
+
 import hydra
 import torch
 import torch.distributed
-import verl.utils.hdfs_io as hdfs_io
 import torch_npu
-from .npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
-# from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 
+# from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 # try:
 #     from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
 # except ImportError:
@@ -43,20 +42,22 @@ from .npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_i
 #     pad_input = None
 #     rearrange = None
 #     unpad_input = None
-
 from peft import LoraConfig, TaskType, get_peft_model
 from tensordict import TensorDict
 from torch import nn, optim
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
-from torch.distributed.fsdp import CPUOffload
+from torch.distributed.fsdp import CPUOffload, MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedModel
+from verl_patch.trainer.code.constant import QWEN3CHATTEMPLATE, QWEN3CODERCHATTEMPLATE
+from verl_patch.utils.dataset import SFTDataset
+
+import verl.utils.hdfs_io as hdfs_io
 from verl.utils.dataset.multiturn_sft_dataset import MultiTurnSFTDataset
 from verl.utils.debug import log_gpu_memory_usage
-from verl.utils.device import get_device_name, get_device_id, is_npu_available
+from verl.utils.device import get_device_id, get_device_name
 from verl.utils.distributed import initialize_global_process_group
 from verl.utils.fs import copy_to_local
 from verl.utils.fsdp_utils import (
@@ -76,8 +77,7 @@ from verl.utils.ulysses import (
 )
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
-from verl_patch.trainer.code.constant import QWEN3CHATTEMPLATE, QWEN3CODERCHATTEMPLATE
-from verl_patch.utils.dataset import SFTDataset
+from .npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
 
 # logger = logging.getLogger(__file__)
 logger = logging.getLogger("SFTTrainer")
@@ -90,7 +90,6 @@ logger = logging.getLogger("SFTTrainer")
 
 # # 测试写入
 # logger.info("🧪 测试写入文件")
-
 
 
 def extract_step(path):
@@ -154,9 +153,9 @@ class FSDPSFTTrainer:
         if self.device_mesh.get_rank() == 0:
             print(f"Normalize batch size by dp {dp_size}")
 
-        assert (
-            self.config.data.train_batch_size % dp_size == 0
-        ), f"Global batch size {self.config.data.train_batch_size} is not divisible by dp size {dp_size}"
+        assert self.config.data.train_batch_size % dp_size == 0, (
+            f"Global batch size {self.config.data.train_batch_size} is not divisible by dp size {dp_size}"
+        )
 
         self.config.data.train_batch_size //= dp_size
 
@@ -168,7 +167,7 @@ class FSDPSFTTrainer:
         self.train_dataset, self.val_dataset = train_dataset, val_dataset
 
         # build dataloader
-        # Use data parallel rank and size instead of global rank and world size_build_model_optimizer 
+        # Use data parallel rank and size instead of global rank and world size_build_model_optimizer
 
         # If doing SP, we need to use the local rank and size
         if self.config.ulysses_sequence_parallel_size > 1:
@@ -319,7 +318,7 @@ class FSDPSFTTrainer:
             betas=self.config.optim.betas,
             weight_decay=self.config.optim.weight_decay,
         )
-        
+
         # log_gpu_memory_usage("After initialize optimizer", logger=logger)
         if get_device_name() == "cuda":
             log_gpu_memory_usage("After initialize optimizer", logger=logger)
@@ -328,11 +327,13 @@ class FSDPSFTTrainer:
         self.total_steps = self.steps_per_epoch * self.config.trainer.total_epochs
 
         if self.device_mesh.get_rank() == 0:
-            logger.info(f"✅ 优化器就绪: lr={self.config.optim.lr}, warmup_steps={int(self.total_steps * self.config.optim.warmup_steps_ratio)}")
+            warmup_steps = int(self.total_steps * self.config.optim.warmup_steps_ratio)
+            logger.info(f"✅ 优化器就绪: lr={self.config.optim.lr}, warmup_steps={warmup_steps}")
 
         if self.device_mesh.get_rank() == 0:
             print(
-                f"Number of steps/epoch {self.steps_per_epoch}, number of epochs {self.config.trainer.total_epochs}, total number of steps {self.total_steps}"
+                f"Number of steps/epoch {self.steps_per_epoch}, number of epochs {self.config.trainer.total_epochs}, "
+                f"total number of steps {self.total_steps}"
             )
 
         num_warmup_steps = int(self.total_steps * self.config.optim.warmup_steps_ratio)
@@ -487,16 +488,16 @@ class FSDPSFTTrainer:
 
         for i, micro_batch in enumerate(micro_batches):
             batch_start = time.perf_counter()
-            
+
             loss = self._compute_loss_and_backward(batch=micro_batch) / n_micro_batches
             step_loss += loss.item()
-            
+
             batch_end = time.perf_counter()
             duration = batch_end - batch_start
-            
+
             # 记录单个 micro_batch 的耗时和累计 loss
             logger.info(
-                f"✅ [Batch {i+1}/{len(micro_batches)}] loss calculation completed. "
+                f"✅ [Batch {i + 1}/{len(micro_batches)}] loss calculation completed. "
                 f"Current step_loss: {step_loss:.4f}, Duration: {duration:.4f}s"
             )
 
@@ -505,10 +506,10 @@ class FSDPSFTTrainer:
 
         logger.info(
             f"✅ All micro_batches completed. Total step_loss: {step_loss:.4f}, "
-            f"Total Duration: {total_duration:.4f}s, Avg per batch: {total_duration/len(micro_batches):.4f}s"
+            f"Total Duration: {total_duration:.4f}s, Avg per batch: {total_duration / len(micro_batches):.4f}s"
         )
 
-        logger.info(f"✅ micro_batches 的 loss计算完成 ✅")
+        logger.info("✅ micro_batches 的 loss计算完成 ✅")
         grad_norm = self.fsdp_model.clip_grad_norm_(max_norm=self.config.optim.clip_grad)
 
         # log_gpu_memory_usage("Before optimizer step", logger=logger)
@@ -527,7 +528,7 @@ class FSDPSFTTrainer:
             log_gpu_memory_usage("After optimizer step", logger=logger)
 
         self.lr_scheduler.step()
-        logger.info(f"✅ 学习率lr_scheduler更新完成 ✅")
+        logger.info("✅ 学习率lr_scheduler更新完成 ✅")
 
         # reduce loss across dp ranks
         lr = self.lr_scheduler.get_last_lr()[0]
@@ -541,16 +542,18 @@ class FSDPSFTTrainer:
         # step_loss = torch.tensor(step_loss).cuda()
         step_loss = torch.tensor(step_loss).to(get_device_id())
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        
-        logger.info(f"✅ step_loss 计算完成 ")
+
+        logger.info("✅ step_loss 计算完成 ")
 
         step_time = time.time() - step_start
-        if self.device_mesh.get_rank() == 0 and hasattr(self, '_global_step'):
+        if self.device_mesh.get_rank() == 0 and hasattr(self, "_global_step"):
             self._global_step += 1
             # 每10步记录一次性能
             if self._global_step % 10 == 0:
-                logger.info(f"⏱️  Step {self._global_step} | 耗时: {step_time:.3f}s | "
-                        f"Loss: {step_loss.item():.4f} | LR: {lr*1e3:.2f}e-3")
+                logger.info(
+                    f"⏱️  Step {self._global_step} | 耗时: {step_time:.3f}s | "
+                    f"Loss: {step_loss.item():.4f} | LR: {lr * 1e3:.2f}e-3"
+                )
         elif self.device_mesh.get_rank() == 0:
             self._global_step = 1
 
@@ -583,7 +586,7 @@ class FSDPSFTTrainer:
                 hdfs_io.copy(src=path, dst=self.config.trainer.default_hdfs_dir, dirs_exist_ok=True)
         torch.distributed.barrier()
         if self.device_mesh.get_rank() == 0:
-            logger.info(f"✅ 检查点保存完成 | 耗时: {time.time()-save_start:.2f}s | 路径: {path}")
+            logger.info(f"✅ 检查点保存完成 | 耗时: {time.time() - save_start:.2f}s | 路径: {path}")
 
     def get_profiler(self):
         # if args.profile_level == 'level_none':
@@ -597,7 +600,7 @@ class FSDPSFTTrainer:
         # else:
         #     raise ValueError(f"profiler_level only supports level0,"
         #                      f" 1, 2, and level_none, but gets {args.profile_level}")
-        
+
         # if args.profile_export_type == 'text':
         profile_export_type = torch_npu.profiler.ExportType.Text
         # elif args.profile_export_type == 'db':
@@ -605,7 +608,7 @@ class FSDPSFTTrainer:
         # else:
         #     raise ValueError(f"profile_export_type only supports text or db,"
         #                      f"but gets {args.export_type}")
-            
+
         experimental_config = torch_npu.profiler._ExperimentalConfig(
             aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
             profiler_level=profiler_level,
@@ -623,14 +626,13 @@ class FSDPSFTTrainer:
             activities=activites,
             schedule=torch_npu.profiler.schedule(wait=0, warmup=1, active=5, repeat=1, skip_first=0),
             on_trace_ready=torch_npu.profiler.tensorboard_trace_handler("./profiler_output"),
-            experimental_config=experimental_config)
+            experimental_config=experimental_config,
+        )
 
         return prof
 
-
-
     def fit(self):
-        logger.info(f"enter fit !!!!")
+        logger.info("enter fit !!!!")
         rank = self.device_mesh.get_rank()
 
         # TODO: add a unified tracking
@@ -640,7 +642,9 @@ class FSDPSFTTrainer:
                 experiment_name=self.config.trainer.experiment_name,
                 default_backend=self.config.trainer.logger,
             )
-            logger.info(f"🏃 训练开始 | 实验: {self.config.trainer.experiment_name} | Backend: {self.config.trainer.logger}")
+            logger.info(
+                f"🏃 训练开始 | 实验: {self.config.trainer.experiment_name} | Backend: {self.config.trainer.logger}"
+            )
 
         global_step = 0
         # compute the total training steps.
@@ -651,10 +655,10 @@ class FSDPSFTTrainer:
             total_training_steps = self.config.trainer.total_training_steps
 
         self.total_training_steps = total_training_steps
-        
+
         if rank == 0:
             logger.info(f"🎯 训练目标: {self.total_training_steps} steps ({self.config.trainer.total_epochs} epochs)")
-            
+
             # NPU预热（避免冷启动影响计时）
             if get_device_name() == "npu":
                 logger.info("🔥 NPU预热中...")
@@ -679,20 +683,20 @@ class FSDPSFTTrainer:
                 self.train_dataloader,
                 total=self.steps_per_epoch,
                 desc=f"Epoch {epoch + 1}/{self.config.trainer.total_epochs}",
-                disable=rank != 0
+                disable=rank != 0,
             ):
                 global_step += 1
                 # data = TensorDict(data, batch_size=self.config.data.train_batch_size).cuda()
                 data = TensorDict(data, batch_size=self.config.data.train_batch_size).to(get_device_id())
-                
+
                 # NPU同步以确保准确计时
                 if get_device_name() == "npu":
                     torch.npu.synchronize()
                 step_start = time.time()
-                
-                logger.info(f"enter self.training_step !!!")
+
+                logger.info("enter self.training_step !!!")
                 metric = self.training_step(data)
-                
+
                 # 计算step耗时
                 if get_device_name() == "npu":
                     torch.npu.synchronize()
@@ -700,13 +704,15 @@ class FSDPSFTTrainer:
                 # prof.step()
                 if rank == 0:
                     tracking.log(data=metric, step=global_step)
-                    
+
                     # 每50步输出详细进度
                     if global_step % 50 == 0:
-                        logger.info(f"📈 Step {global_step}/{self.total_training_steps} | "
-                                f"Loss: {metric['train/loss']:.4f} | "
-                                f"LR: {metric['train/lr(1e-3)']:.3f}e-3 | "
-                                f"耗时: {step_time:.3f}s")
+                        logger.info(
+                            f"📈 Step {global_step}/{self.total_training_steps} | "
+                            f"Loss: {metric['train/loss']:.4f} | "
+                            f"LR: {metric['train/lr(1e-3)']:.3f}e-3 | "
+                            f"耗时: {step_time:.3f}s"
+                        )
 
                 if self.config.trainer.save_freq > 0 and global_step % self.config.trainer.save_freq == 0:
                     if rank == 0:
@@ -717,30 +723,33 @@ class FSDPSFTTrainer:
                 if global_step >= self.total_training_steps:
                     if rank == 0:
                         logger.info(f"🎯 达到目标步数 {self.total_training_steps}，执行最终验证")
-                        
+
                     # # Perform final validation
                     # val_losses = []
                     # if rank == 0:
                     #     logger.info("🔍 最终验证开始...")
-                    #     
+                    #
                     # for val_data in self.val_dataloader:
-                    #     val_data = TensorDict(val_data, batch_size=self.config.data.micro_batch_size_per_gpu).to(get_device_id())
+                    # val_data = (
+                    #     TensorDict(val_data, batch_size=self.config.data.micro_batch_size_per_gpu)
+                    #     .to(get_device_id())
+                    # )
                     #     val_loss = self.validation_step(val_data)
                     #     val_losses.append(val_loss)
-                    #     
+                    #
                     # if rank == 0:
                     #     avg_val_loss = torch.mean(torch.stack(val_losses))
                     #     metric = {"val/loss": avg_val_loss.detach().item()}
                     #     tracking.log(data=metric, step=global_step)
                     #     logger.info(f"📊 最终验证完成 | Loss: {avg_val_loss.item():.4f}")
-                        
+
                     torch.distributed.barrier()
 
                     # Save final checkpoint
                     if rank == 0:
                         logger.info("💾 保存最终检查点...")
                     self.save_checkpoint(step=global_step)
-                    
+
                     if rank == 0:
                         logger.info("🏁 训练完成！")
                     return
@@ -748,27 +757,27 @@ class FSDPSFTTrainer:
             # validation
             if rank == 0:
                 logger.info(f"🔍 Epoch {epoch + 1} 验证开始...")
-                
+
             # val_losses = []
             # for data in self.val_dataloader:
             #     data = TensorDict(data, batch_size=self.config.data.micro_batch_size_per_gpu).to(get_device_id())
             #     # data = TensorDict(data, batch_size=self.config.data.micro_batch_size_per_gpu).cuda()
             #     val_loss = self.validation_step(data)
             #     val_losses.append(val_loss)
-            #     
+            #
             # if rank == 0:
             #     val_loss = torch.mean(torch.stack(val_losses))
             #     metric = {"val/loss": val_loss.detach().item()}
             #     tracking.log(data=metric, step=global_step)
             #     logger.info(f"📊 Epoch {epoch + 1} 验证完成 | Loss: {val_loss.item():.4f}")
-                
+
             torch.distributed.barrier()
 
             # save checkpoint
             if rank == 0:
                 logger.info(f"💾 保存 Epoch {epoch + 1} 检查点...")
             self.save_checkpoint(step=global_step)
-            
+
             if rank == 0:
                 logger.info(f"✅ Epoch {epoch + 1}/{self.config.trainer.total_epochs} 完成")
 
@@ -785,11 +794,13 @@ def main(config):
     # device_mesh = init_device_mesh(device_type="cuda", mesh_shape=(world_size,), mesh_dim_names=("fsdp",))
     device_type = get_device_name()
     device_mesh = init_device_mesh(device_type=device_type, mesh_shape=(world_size,), mesh_dim_names=("fsdp",))
-    
+
     dp_size = world_size // config.ulysses_sequence_parallel_size
     ulysses_device_mesh = init_device_mesh(
         # device_type="cuda", mesh_shape=(dp_size, config.ulysses_sequence_parallel_size), mesh_dim_names=("dp", "sp")
-        device_type=device_type, mesh_shape=(dp_size, config.ulysses_sequence_parallel_size), mesh_dim_names=("dp", "sp")
+        device_type=device_type,
+        mesh_shape=(dp_size, config.ulysses_sequence_parallel_size),
+        mesh_dim_names=("dp", "sp"),
     )
     # build tokenizer and datasets first
     from verl.utils import hf_tokenizer

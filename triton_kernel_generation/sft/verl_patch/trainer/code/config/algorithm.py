@@ -113,9 +113,13 @@ class AlgoConfig(BaseConfig):
     # Advantage estimation configuration
     adv_by_last_turn: bool = True  # Only use the last turn's data for advantage calculation
     use_final_reward: bool = True  # Restrict reward assignment to the last turn (ignore intermediate rewards)
-    is_get_last_turn: bool = True  # Whether to extract only last turn data for filtering (all turns still used for training)
+    is_get_last_turn: bool = (
+        True  # Whether to extract only last turn data for filtering (all turns still used for training)
+    )
     reward_shaping: bool = False  # Whether to shape rewards to residual rewards
-    unbiased_shaping: bool = False  # Whether to use unbiased shaping, we could add a terminal rewards 0 to keep optimal policy still.
+    unbiased_shaping: bool = (
+        False  # Whether to use unbiased shaping, we could add a terminal rewards 0 to keep optimal policy still.
+    )
 
     # Rollout Correction
     # Controls computation of IS weights, rejection mask and mismatch metrics
@@ -147,7 +151,7 @@ class AlgoConfig(BaseConfig):
         # Validate: bypass mode incompatible with features requiring sum_pi_squared
         if self.bypass_old_logprob_for_rollout:
             # Check 1: optimal_baseline estimators
-            if 'optimal_baseline' in self.adv_estimator:
+            if "optimal_baseline" in self.adv_estimator:
                 raise ValueError(
                     f"bypass_old_logprob_for_rollout=True is incompatible with "
                     f"adv_estimator='{self.adv_estimator}'. Optimal baseline requires sum_pi_squared "
@@ -158,16 +162,16 @@ class AlgoConfig(BaseConfig):
             # Check 2: multi-prompt MVU (requires sum_pi_squared for W(τ) computation)
             if self.use_multi_prompt_mvu:
                 raise ValueError(
-                    f"bypass_old_logprob_for_rollout=True is incompatible with "
-                    f"use_multi_prompt_mvu=True. MVU requires sum_pi_squared "
-                    f"from actor.compute_log_prob(), which is skipped in bypass mode. "
-                    f"Use bypass_old_logprob_for_rollout=False with use_multi_prompt_mvu=True."
+                    "bypass_old_logprob_for_rollout=True is incompatible with "
+                    "use_multi_prompt_mvu=True. MVU requires sum_pi_squared "
+                    "from actor.compute_log_prob(), which is skipped in bypass mode. "
+                    "Use bypass_old_logprob_for_rollout=False with use_multi_prompt_mvu=True."
                 )
         if self.use_pure_rollout_correction:
             if not self.bypass_old_logprob_for_rollout:
                 raise ValueError(
-                    f"use_pure_rollout_correction=True requires bypass_old_logprob_for_rollout=True. "
-                    f"Set bypass_old_logprob_for_rollout=True to enable pure rollout correction."
+                    "use_pure_rollout_correction=True requires bypass_old_logprob_for_rollout=True. "
+                    "Set bypass_old_logprob_for_rollout=True to enable pure rollout correction."
                 )
 
     # Threshold Recommendations for ~10000 token sequences:

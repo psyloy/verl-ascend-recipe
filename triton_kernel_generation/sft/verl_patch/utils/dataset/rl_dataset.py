@@ -16,15 +16,16 @@ import copy
 import json
 import os
 from collections import defaultdict
-from typing import List, Optional, Union
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import torch
-import verl.utils.torch_functional as verl_F
 from omegaconf import ListConfig, OmegaConf
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizer, ProcessorMixin
+
+import verl.utils.torch_functional as verl_F
 from verl.utils.model import compute_position_id_with_mask
 
 
@@ -55,7 +56,7 @@ def process_image(image: dict, max_pixels: int = 2048 * 2048, min_pixels: int = 
     from PIL import Image
 
     if isinstance(image, dict):
-        image = Image.open(BytesIO(image['bytes']))
+        image = Image.open(BytesIO(image["bytes"]))
 
     if (image.width * image.height) > max_pixels:
         resize_factor = math.sqrt(max_pixels / (image.width * image.height))
@@ -67,8 +68,8 @@ def process_image(image: dict, max_pixels: int = 2048 * 2048, min_pixels: int = 
         width, height = int(image.width * resize_factor), int(image.height * resize_factor)
         image = image.resize((width, height))
 
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
+    if image.mode != "RGB":
+        image = image.convert("RGB")
 
     return image
 
@@ -80,24 +81,25 @@ class RLHFDataset(Dataset):
 
     def __init__(
         self,
-        parquet_files: Union[str, List[str]],
+        parquet_files: str | list[str],
         tokenizer: PreTrainedTokenizer,
         processor: Optional[ProcessorMixin] = None,
-        prompt_key='prompt',
-        image_key='images',
+        prompt_key="prompt",
+        image_key="images",
         max_prompt_length=1024,
         filter_prompts=True,
-        cache_dir='~/.cache/verl/rlhf',
+        cache_dir="~/.cache/verl/rlhf",
         chat_template_func=None,
         apply_chat_template=False,
         return_raw_chat=False,
-        truncation='error',
-        # if using sample_size, trucnate every validation dataset into this to reduce the time used for evaluation each time
+        truncation="error",
+        # if using sample_size, trucnate every validation dataset into this to
+        # reduce the time used for evaluation each time
         sample_size=None,
         filter_overlong_prompts=True,
         system_prompt_config=None,
     ):
-        if not isinstance(parquet_files, (List, ListConfig)):
+        if not isinstance(parquet_files, (list, ListConfig)):
             parquet_files = [parquet_files]
 
         self.parquet_files = copy.deepcopy(parquet_files)
@@ -143,7 +145,7 @@ class RLHFDataset(Dataset):
             dataframes.append(dataframe)
         self.dataframe = pd.concat(dataframes)
 
-        print(f'dataset len: {len(self.dataframe)}')
+        print(f"dataset len: {len(self.dataframe)}")
 
         if self.filter_overlong_prompts:
             # filter out too long prompts
@@ -166,21 +168,21 @@ class RLHFDataset(Dataset):
             else:
                 self.dataframe = self.dataframe[
                     self.dataframe.apply(
-                        lambda doc: len(tokenizer.encode(doc[prompt_key][0]['content'])) <= self.max_prompt_length,
+                        lambda doc: len(tokenizer.encode(doc[prompt_key][0]["content"])) <= self.max_prompt_length,
                         axis=1,
                     )
                 ]
 
-            print(f'filter dataset len: {len(self.dataframe)}')
+            print(f"filter dataset len: {len(self.dataframe)}")
 
     def resume_dataset_state(self):
-        self.serialize_dataset = False if hasattr(self, 'original_parquet_files') else True
+        self.serialize_dataset = False if hasattr(self, "original_parquet_files") else True
         # resume dataframe if not it's serialized in data.pt
         if not self.serialize_dataset:
             self._download(use_origin_parquet=True)  # download and resume from original parquet files
             self._read_files_and_tokenize()
         else:
-            print(r'old dataloader ckpt file is used, please train from scratch for better ckpt performance')
+            print(r"old dataloader ckpt file is used, please train from scratch for better ckpt performance")
 
     def __len__(self):
         return len(self.dataframe)
@@ -203,37 +205,37 @@ class RLHFDataset(Dataset):
 
                     # Parse based on file extension
                     file_ext = os.path.splitext(self.system_prompt_config)[1].lower()
-                    if file_ext == '.json':
+                    if file_ext == ".json":
                         config = json.loads(content)
-                        prompt_text = config.get('prompt', '')
-                        prompt_config_method = config.get('method', 'system')
-                    elif file_ext in ['.yaml', '.yml']:
+                        prompt_text = config.get("prompt", "")
+                        prompt_config_method = config.get("method", "system")
+                    elif file_ext in [".yaml", ".yml"]:
                         config = OmegaConf.load(self.system_prompt_config)
-                        prompt_text = config.get('prompt', '')
-                        prompt_config_method = config.get('method', 'system')
+                        prompt_text = config.get("prompt", "")
+                        prompt_config_method = config.get("method", "system")
                     else:
                         # Treat as plain text
                         prompt_text = content
-                        prompt_config_method = 'system'
+                        prompt_config_method = "system"
 
                     # Apply prompt based on method
-                    if prompt_config_method == 'system':
+                    if prompt_config_method == "system":
                         # Add system message to the beginning of the chat if not already present
-                        if prompt_text and (not chat or chat[0].get('role') != 'system'):
-                            chat = [{'role': 'system', 'content': prompt_text}] + chat
-                    elif prompt_config_method == 'pre_input':
+                        if prompt_text and (not chat or chat[0].get("role") != "system"):
+                            chat = [{"role": "system", "content": prompt_text}] + chat
+                    elif prompt_config_method == "pre_input":
                         # Insert before the first user input
                         for i, message in enumerate(chat):
-                            if message.get('role') == 'user':
-                                new_content = prompt_text + message.get('content', '')
-                                chat[i]['content'] = new_content
+                            if message.get("role") == "user":
+                                new_content = prompt_text + message.get("content", "")
+                                chat[i]["content"] = new_content
                                 break
-                    elif prompt_config_method == 'post_input':
+                    elif prompt_config_method == "post_input":
                         # Insert after the first user input
                         for i, message in enumerate(chat):
-                            if message.get('role') == 'user':
-                                new_content = message.get('content', '') + prompt_text
-                                chat[i]['content'] = new_content
+                            if message.get("role") == "user":
+                                new_content = message.get("content", "") + prompt_text
+                                chat[i]["content"] = new_content
                                 break
                 except Exception as e:
                     print(f"Error processing prompt config file: {e}")
@@ -247,31 +249,31 @@ class RLHFDataset(Dataset):
                 chat, add_generation_prompt=True, tokenize=False
             )
         else:
-            prompt_with_chat_template = chat[0]['content']
+            prompt_with_chat_template = chat[0]["content"]
 
         is_multi_modal = self.image_key in row_dict
         if is_multi_modal:  # expand image token
-            raw_prompt = prompt_with_chat_template.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
-            row_dict['multi_modal_data'] = {'image': [process_image(image) for image in row_dict.pop(self.image_key)]}
-            image_inputs = self.processor.image_processor(row_dict['multi_modal_data']['image'], return_tensors='pt')
-            image_grid_thw = image_inputs['image_grid_thw']
-            row_dict['multi_modal_inputs'] = {key: val for key, val in image_inputs.items()}
+            raw_prompt = prompt_with_chat_template.replace("<image>", "<|vision_start|><|image_pad|><|vision_end|>")
+            row_dict["multi_modal_data"] = {"image": [process_image(image) for image in row_dict.pop(self.image_key)]}
+            image_inputs = self.processor.image_processor(row_dict["multi_modal_data"]["image"], return_tensors="pt")
+            image_grid_thw = image_inputs["image_grid_thw"]
+            row_dict["multi_modal_inputs"] = {key: val for key, val in image_inputs.items()}
 
             if image_grid_thw is not None:
                 merge_length = self.processor.image_processor.merge_size**2
                 index = 0
-                while '<image>' in prompt_with_chat_template:
+                while "<image>" in prompt_with_chat_template:
                     prompt_with_chat_template = prompt_with_chat_template.replace(
-                        '<image>',
-                        '<|vision_start|>'
-                        + '<|placeholder|>' * (image_grid_thw[index].prod() // merge_length)
-                        + '<|vision_end|>',
+                        "<image>",
+                        "<|vision_start|>"
+                        + "<|placeholder|>" * (image_grid_thw[index].prod() // merge_length)
+                        + "<|vision_end|>",
                         1,
                     )
                     index += 1
 
                 prompt_with_chat_template = prompt_with_chat_template.replace(
-                    '<|placeholder|>', self.processor.image_token
+                    "<|placeholder|>", self.processor.image_token
                 )
         else:
             raw_prompt = prompt_with_chat_template
@@ -297,14 +299,14 @@ class RLHFDataset(Dataset):
         else:
             position_ids = compute_position_id_with_mask(attention_mask)
 
-        row_dict['input_ids'] = input_ids[0]
-        row_dict['attention_mask'] = attention_mask[0]
-        row_dict['position_ids'] = position_ids[0]
-        row_dict['raw_prompt_ids'] = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
+        row_dict["input_ids"] = input_ids[0]
+        row_dict["attention_mask"] = attention_mask[0]
+        row_dict["position_ids"] = position_ids[0]
+        row_dict["raw_prompt_ids"] = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
 
         # encode prompts without chat template
         if self.return_raw_chat:
-            row_dict['raw_prompt'] = chat.tolist() if not isinstance(chat, list) else chat
+            row_dict["raw_prompt"] = chat.tolist() if not isinstance(chat, list) else chat
 
         # add index for each prompt
         extra_info = row_dict.get("extra_info", {})
@@ -320,8 +322,8 @@ class RLHFDataset(Dataset):
         if not self.serialize_dataset:
             state = self.__dict__.copy()
 
-            if 'dataframe' in state:
-                del state['dataframe']
+            if "dataframe" in state:
+                del state["dataframe"]
             return state
         return self.__dict__.copy()
 
@@ -342,11 +344,11 @@ class SolveRateDynamicRLHFDataset(RLHFDataset):
         super().__init__(*args, **kwargs)
 
         # Validate dataset structure
-        if 'solve_rate' not in self.dataframe.columns:
+        if "solve_rate" not in self.dataframe.columns:
             raise ValueError("Dataset must contain 'solve_rate' column")
 
         # Initialize solve rate tracking
-        self.current_solve_rates = self.dataframe['solve_rate'].to_numpy().copy()
+        self.current_solve_rates = self.dataframe["solve_rate"].to_numpy().copy()
         # self.original_indices = self.dataframe.index.tolist()
 
     def __len__(self):
