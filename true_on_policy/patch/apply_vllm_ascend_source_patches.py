@@ -100,9 +100,7 @@ def select_vllm_ascend_source_patches(recipe_dir: Path, vllm_ascend_root: Path) 
     patch_dir = recipe_dir / "patch" / "vllm_ascend_patches"
 
     if _has_true_on_policy_vllm_ascend_patch(vllm_ascend_root):
-        plan.skip_reasons.append(
-            "vllm-ascend already contains true_on_policy batch-invariant and FA3 backend patches"
-        )
+        plan.skip_reasons.append("vllm-ascend already contains true_on_policy batch-invariant and FA3 backend patches")
     else:
         plan.patch_files.append(patch_dir / _VLLM_ASCEND_TRUE_ON_POLICY_PATCH)
 
