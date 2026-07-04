@@ -12,7 +12,7 @@
 | Python | 3.11 |                            |
 | PyTorch / torch_npu | 2.9.0 | 随 PTA B120                 |
 | vLLM | 0.18.0 |                            |
-| vLLM-Ascend | v0.18.0 + [PR #10375](https://github.com/vllm-project/vllm-ascend/pull/10375) | FA3 batch-invariant 适配     |
+| vLLM-Ascend | v0.18.0 + true_on_policy patch | FA3 + batch-invariant 训推一致性适配 |
 | Megatron-LM | `3bec9aa97dda898d16ff5a89bac0ed2b6682b172` |                            |
 | MindSpeed | `core_r0.16.0` |                            |
 | verl | `release/v0.8.0` 或 `main` | main可能会因为迭代重构的原因导致patch出问题 |
@@ -31,7 +31,7 @@ true_on_policy/
 │   ├── README.md                          # Patch 系统设计文档
 │   ├── __init__.py                        # VERL_USE_EXTERNAL_MODULES 入口
 │   ├── apply_verl_source_patches.py       # 按 verl 版本自动选择并 git apply
-│   ├── apply_vllm_ascend_source_patches.py # vllm-ascend batch_invariant 源码 patch
+│   ├── apply_vllm_ascend_source_patches.py # vllm-ascend 训推一致性源码 patch（自动 apply）
 │   ├── verl_patch_selector.py             # 版本检测 + 上游特性检测
 │   ├── verl_patches/
 │   │   ├── verl_npu_pp_per_request_seed_v0.8.0.patch
@@ -40,7 +40,7 @@ true_on_policy/
 │   │   ├── verl_per_request_seed_v0.8.0.patch   # PP 已 upstream 时的 seed 增量
 │   │   └── verl_per_request_seed_main.patch
 │   ├── vllm_ascend_patches/
-│   │   └── vllm_ascend_batch_invariant.patch
+│   │   └── vllm_ascend_true_on_policy.patch
 │   ├── per_request_seed.md
 │   └── npu_true_on_policy_patch.py
 └── scripts/
@@ -70,13 +70,15 @@ pip install vllm==0.18.0
 git clone https://github.com/vllm-project/vllm-ascend.git
 cd vllm-ascend
 git checkout releases/v0.18.0
-git fetch origin pull/10375/head:pr-10375
-git merge pr-10375 --no-edit
 pip install -r requirements.txt
 export COMPILE_CUSTOM_KERNELS=1
 pip install -v -e .
 cd ..
+```
 
+启动训练时，`VERL_USE_EXTERNAL_MODULES=verl_ascend_recipe.true_on_policy.patch` 会自动对 vllm-ascend 源码 apply `vllm_ascend_true_on_policy.patch`（含 FA3 backend 与 batch-invariant 算子注册）
+
+```bash
 pip install triton-ascend==3.2.1 \
   --extra-index-url=https://triton-ascend.osinfra.cn/pypi/simple \
   --trusted-host triton-ascend.osinfra.cn
