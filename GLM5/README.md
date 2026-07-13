@@ -26,6 +26,11 @@ source /CANN/900B160/nnal/atb/set_env.sh
 ```
 
 # 环境安装
+## 安装verl-ascend-recipe
+```bash
+# 注意：请在 verl-ascend-recipe 的同级目录下（即父目录）执行后续的所有安装命令，以确保相对路径 ../verl-ascend-recipe/... 正确。
+git clone https://github.com/verl-project/verl-ascend-recipe.git
+```
 
 ## 安装transformers
 
@@ -55,12 +60,10 @@ cd ..
 ```bash
 git clone https://github.com/vllm-project/vllm-ascend.git -b releases/v0.18.0
 cd vllm-ascend
-git apply ../verl-ascend-recipe/GLM5/patch/vllm_ascend.patch
+git apply ../verl-ascend-recipe/GLM5/patch/vllm-ascend.patch
 pip install -r requirements-dev.txt
-pip install -v -e .
+pip install -v -e . --extra-index-url=https://triton-ascend.osinfra.cn/pypi/simple --trusted-host triton-ascend.osinfra.cn
 cd ..
-# 装triton_ascend
-pip install triton-ascend==3.2.1 --extra-index-url=https://triton-ascend.osinfra.cn/pypi/simple --trusted-host triton-ascend.osinfra.cn
 ```
 
 ## 安装verl
@@ -68,7 +71,6 @@ pip install triton-ascend==3.2.1 --extra-index-url=https://triton-ascend.osinfra
 ```bash
 git clone https://github.com/volcengine/verl.git -b release/v0.8.0
 cd verl
-git apply ../verl-ascend-recipe/GLM5/patch/verl.patch
 pip install -r requirements-npu.txt
 pip install -v -e .
 cd ..
@@ -89,7 +91,6 @@ cd ..
 ```bash
 git clone https://github.com/NVIDIA/Megatron-LM.git -b core_v0.16.0
 cp -r Megatron-LM/megatron verl/
-cd ..
 ```
 
 ## 安装Megatron-Bridge
