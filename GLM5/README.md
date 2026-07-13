@@ -59,7 +59,7 @@ cd ..
 ```bash
 git clone https://github.com/vllm-project/vllm-ascend.git -b releases/v0.18.0
 cd vllm-ascend
-git apply ../verl-ascend-recipe/GLM5/patch/vllm_ascend.patch
+git apply ../verl-ascend-recipe/GLM5/patch/vllm-ascend.patch
 pip install -r requirements-dev.txt
 pip install -v -e . --extra-index-url=https://triton-ascend.osinfra.cn/pypi/simple --trusted-host triton-ascend.osinfra.cn
 cd ..
