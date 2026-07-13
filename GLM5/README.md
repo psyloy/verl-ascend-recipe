@@ -70,7 +70,6 @@ cd ..
 ```bash
 git clone https://github.com/volcengine/verl.git -b release/v0.8.0
 cd verl
-git apply ../verl-ascend-recipe/GLM5/patch/verl.patch
 pip install -r requirements-npu.txt
 pip install -v -e .
 cd ..
