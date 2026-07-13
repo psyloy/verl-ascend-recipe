@@ -28,6 +28,7 @@ source /CANN/900B160/nnal/atb/set_env.sh
 # 环境安装
 ## 安装verl-ascend-recipe
 ```bash
+# 注意：请在 verl-ascend-recipe 的同级目录下（即父目录）执行后续的所有安装命令，以确保相对路径 ../verl-ascend-recipe/... 正确。
 git clone https://github.com/verl-project/verl-ascend-recipe.git
 ```
 
