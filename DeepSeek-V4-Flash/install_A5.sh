@@ -49,8 +49,8 @@ pip install triton-ascend==3.2.1 --extra-index-url https://triton-ascend.osinfra
 pip install transformers==5.8.1
 
 echo "7.apply patch"
-cd Megatron-LM
-git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/megatron.patch && cd ..
+cd MindSpeed-LLM
+git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/mindspeed-llm.patch && cd ..
 
 cd mbridge
 git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/A5/mbridge_A5.patch && cd ..

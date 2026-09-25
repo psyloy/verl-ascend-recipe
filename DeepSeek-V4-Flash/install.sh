@@ -20,20 +20,24 @@ cd ..
 
 echo "2. install vllm-ascend from source"
 git clone -b releases/v0.23.0 https://github.com/vllm-project/vllm-ascend.git
-cd vllm-ascend && pip install -r requirements.txt --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple/ --trusted-host triton-ascend.osinfra.cn
+# patch/vllm-ascend.patch 基于 4e5f393af（releases/v0.23.0 HEAD）生成，先固定版本
+cd vllm-ascend && git checkout -q 4e5f393af
+pip install -r requirements.txt --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple/ --trusted-host triton-ascend.osinfra.cn
 export COMPILE_CUSTOM_KERNELS=1
 pip install -v -e . --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple/ --trusted-host triton-ascend.osinfra.cn 
 cd ..
 
 echo "3.install mbridge"
 git clone -b v0.15.1 https://github.com/ISEEKYAN/mbridge.git 
-cd mbridge 
+# patch/mbridge.patch 基于 v0.15.1 的 0cd4ae2 生成，固定该 commit 保证可复现
+cd mbridge && git checkout -q 0cd4ae2
 pip install -e . 
 cd ..
 
-echo "4.install verl"
-git clone https://github.com/verl-project/verl.git
-cd verl && git checkout 809f2d8f
+echo "4.install verl (release/v0.9.0)"
+git clone -b release/v0.9.0 https://github.com/verl-project/verl.git
+# patch/verl.patch 基于 release/v0.9.0 的 91c297dc 生成，固定该 commit 保证可复现
+cd verl && git checkout -q 91c297dc
 pip install -r requirements-npu.txt --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple/ --trusted-host triton-ascend.osinfra.cn
 pip install -v -e .
 cd ..
@@ -50,7 +54,8 @@ git checkout core_v0.12.1
 cd ..
 
 git clone https://gitcode.com/ascend/MindSpeed-LLM.git 
-cd MindSpeed-LLM
+# patch/mindspeed-llm.patch 基于 5966485a 生成（readme 版本表同步），先固定版本
+cd MindSpeed-LLM && git checkout -q 5966485a
 cp pretrain_deepseek4.py mindspeed_llm
 pip3 install -r requirements.txt
 cd ..
@@ -66,9 +71,6 @@ if [ "$INSTALL_R3" = "1" ]; then
     (cd MindSpeed-LLM && git checkout -q 3d86279d)
 fi
 
-cd Megatron-LM
-git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/megatron.patch && cd ..
-
 cd mbridge
 git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/mbridge.patch && cd ..
 
@@ -77,6 +79,9 @@ git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/vllm
 
 cd verl
 git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/verl.patch && cd ..
+
+cd MindSpeed-LLM
+git apply --whitespace=nowarn ../verl-ascend-recipe/DeepSeek-V4-Flash/patch/mindspeed-llm.patch && cd ..
 
 if [ "$INSTALL_R3" = "1" ]; then
     echo "8.apply R3 (routing replay) patches"

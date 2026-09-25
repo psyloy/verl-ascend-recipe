@@ -1,0 +1,233 @@
+diff --git a/mindspeed_llm/core/transformer/transformer_block.py b/mindspeed_llm/core/transformer/transformer_block.py
+old mode 100644
+new mode 100755
+index 1097d4c9..24b70e15
+--- a/mindspeed_llm/core/transformer/transformer_block.py
++++ b/mindspeed_llm/core/transformer/transformer_block.py
+@@ -92,6 +92,9 @@ def get_num_layers_to_build(config: TransformerConfig) -> int:
+ 
+     num_layer_list = config.num_layer_list
+     if num_layer_list:
++        if isinstance(num_layer_list, str):
++            num_layer_list = [int(x) for x in num_layer_list.replace(';', ',').split(',') if x.strip()]
++            config.num_layer_list = num_layer_list
+         pp_stage = parallel_state.get_pipeline_model_parallel_rank()
+         num_layers_to_build = num_layer_list[pp_stage]
+     return num_layers_to_build
+@@ -117,9 +120,22 @@ def get_layer_offset_wrapper(fn):
+ 
+     @wraps(fn)
+     def wrapper(config):
+-        if config.num_layer_list:
++        num_layer_list = getattr(config, 'num_layer_list', None)
++        if num_layer_list:
++            # Configs built outside megatron's argument pipeline (e.g. verl
++            # mcore_kwargs) carry num_layer_list as a raw string and never get
++            # layer_offset assigned; normalize both here.
++            if isinstance(num_layer_list, str):
++                num_layer_list = [int(x) for x in num_layer_list.replace(';', ',').split(',') if x.strip()]
++                config.num_layer_list = num_layer_list
++            layer_offset = getattr(config, 'layer_offset', None)
++            if layer_offset is None:
++                layer_offset = [0]
++                for num_layers in num_layer_list:
++                    layer_offset.append(layer_offset[-1] + num_layers)
++                config.layer_offset = layer_offset
+             pp_stage = parallel_state.get_pipeline_model_parallel_rank()
+-            return config.layer_offset[pp_stage]
++            return layer_offset[pp_stage]
+         return fn(config)
+ 
+     return wrapper
+diff --git a/mindspeed_llm/features_manager/__init__.py b/mindspeed_llm/features_manager/__init__.py
+old mode 100644
+new mode 100755
+index 92986714..68c67ec6
+--- a/mindspeed_llm/features_manager/__init__.py
++++ b/mindspeed_llm/features_manager/__init__.py
+@@ -76,6 +76,7 @@ from mindspeed_llm.features_manager.moe.tp_extend_ep import MoETpExtendEpFeature
+ from mindspeed_llm.features_manager.dpo.dpo import DPOFeature
+ from mindspeed_llm.features_manager.pipeline_parallel.dualpipev_feature import DualpipeVFeature
+ from mindspeed_llm.features_manager.pipeline_parallel.noop_layers import NoopLayersFeature
++from mindspeed_llm.features_manager.pipeline_parallel.variable_seq_length_compat import VariableSeqLengthCompatFeature
+ from mindspeed_llm.features_manager.functional.profiling import ProfilingFeature
+ from mindspeed_llm.features_manager.functional.msprobe import MsProbeFeature
+ from mindspeed_llm.features_manager.functional.model_io_trace import ModelIOTraceFeature
+@@ -200,6 +201,7 @@ def add_pipeline_parallel_features(features_list: List[MindSpeedFeature]):
+             RiPipeSchedulesBubbleFeature(),
+             RiPipeSchedulesAdvanceFeature(),
+             NoopLayersFeature(),
++            VariableSeqLengthCompatFeature(),
+             OptimizeP2PCommFeature(),
+             OptimizeSendRecvCommFeature(),
+             UnalignedPipelineFeature(),
+diff --git a/mindspeed_llm/features_manager/pipeline_parallel/num_layer_list.py b/mindspeed_llm/features_manager/pipeline_parallel/num_layer_list.py
+old mode 100644
+new mode 100755
+index 45fb1ef6..cab09485
+--- a/mindspeed_llm/features_manager/pipeline_parallel/num_layer_list.py
++++ b/mindspeed_llm/features_manager/pipeline_parallel/num_layer_list.py
+@@ -63,6 +63,14 @@ class NumLayerListFeature(MindSpeedFeature):
+                 'megatron.core.transformer.transformer_layer.TransformerLayer._get_layer_offset',
+                 get_layer_offset_wrapper,
+             )
++            # TransformerLayer.__init__ resolves the module-level
++            # get_transformer_layer_offset directly (the _get_layer_offset
++            # method above is deprecated and unused), so the module-level
++            # function must be patched as well for non-uniform PP splits.
++            patch_manager.register_patch(
++                'megatron.core.transformer.transformer_layer.get_transformer_layer_offset',
++                get_layer_offset_wrapper,
++            )
+             patch_manager.register_patch(
+                 'megatron.training.arguments.core_transformer_config_from_args',
+                 core_transformer_config_from_args_wrapper,
+diff --git a/mindspeed_llm/features_manager/pipeline_parallel/variable_seq_length_compat.py b/mindspeed_llm/features_manager/pipeline_parallel/variable_seq_length_compat.py
+new file mode 100644
+index 00000000..96a99c9d
+--- /dev/null
++++ b/mindspeed_llm/features_manager/pipeline_parallel/variable_seq_length_compat.py
+@@ -0,0 +1,40 @@
++# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
++from argparse import Namespace
++
++from mindspeed.features_manager.feature import MindSpeedFeature
++from mindspeed.patch_utils import MindSpeedPatchesManager
++
++
++class VariableSeqLengthCompatFeature(MindSpeedFeature):
++    """Always-on: PP p2p shape protocol follows len(tensor_shape) per call.
++
++    Replaces megatron _communicate/_communicate_shapes with MindSpeed Core
++    dynamic variant, so 3D (MHC off) and 4D (MHC on, incl. V4-Pro mixed 3D/4D)
++    activations both communicate with a consistent shape protocol. Registered
++    unconditionally (optimization_level=0) because the patched implementation
++    degrades to native behavior when config.variable_seq_lengths is False, and
++    verl sets TransformerConfig.variable_seq_lengths=True unconditionally.
++    """
++
++    def __init__(self):
++        super().__init__("variable-seq-lengths-compat", optimization_level=0)
++
++    def register_patches(
++            self,
++            patch_manager: MindSpeedPatchesManager,
++            args: Namespace,
++    ):
++        # pylint: disable=import-outside-toplevel
++        from mindspeed.core.pipeline_parallel.variable_seq_length.adaptor import (
++            mindspeed_communicate,
++            mindspeed_commuticate_shapes,
++        )
++
++        patch_manager.register_patch(
++            "megatron.core.pipeline_parallel.p2p_communication._communicate",
++            mindspeed_communicate,
++        )
++        patch_manager.register_patch(
++            "megatron.core.pipeline_parallel.p2p_communication._communicate_shapes",
++            mindspeed_commuticate_shapes,
++        )
+
+diff --git a/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py b/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py
+old mode 100644
+new mode 100755
+index 0cfd4424..80d101e5
+--- a/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py
++++ b/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py
+@@ -318,6 +318,9 @@ def apply_rotary_pos_emb_bshd_in_complex(t: Tensor, freqs: Tensor, rotary_interl
+     return y.to(t.dtype)
+ 
+ 
++_DEEPSEEK4_ROPE_TABLE_CACHE = {}
++
++
+ def apply_deepseek4_rotary_embedding(dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow) -> torch.Tensor:
+     """
+     Precomputes frequency-based complex exponential values for rotary positional embeddings.
+@@ -329,6 +332,15 @@ def apply_deepseek4_rotary_embedding(dim, seqlen, original_seq_len, base, factor
+         torch.Tensor: Precomputed complex exponential values for positional embeddings.
+     """
+ 
++    # Cache the (extended-length) table: this runs on every forward, and the
++    # fp64 CPU computation below is one-shot by design.
++    device = torch.npu.current_device()
++    key = (dim, seqlen, original_seq_len, float(base), float(factor),
++           float(beta_fast), float(beta_slow), device)
++    cached = _DEEPSEEK4_ROPE_TABLE_CACHE.get(key)
++    if cached is not None:
++        return cached
++
+     def find_correction_dim(num_rotations, dim, base, max_seq_len):
+         return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
+ 
+@@ -340,22 +352,27 @@ def apply_deepseek4_rotary_embedding(dim, seqlen, original_seq_len, base, factor
+     def linear_ramp_factor(min_val, max_val, dim):
+         if min_val == max_val:
+             max_val += 0.001
+-        linear_func = (torch.arange(dim, dtype=torch.float32, device=torch.npu.current_device()) - min_val) / (
++        linear_func = (torch.arange(dim, dtype=torch.float64) - min_val) / (
+             max_val - min_val
+         )
+         ramp_func = torch.clamp(linear_func, 0, 1)
+         return ramp_func
+ 
+     freqs = 1.0 / (
+-        base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=torch.npu.current_device()) / dim)
++        base ** (torch.arange(0, dim, 2, dtype=torch.float64) / dim)
+     )  # RoPE编码的频率,i越接近0的越大(->1),i越接近dim/2的越小(->0);  base^(-2i/dim) (2i是0-dim的偶数序列)
+     if original_seq_len > 0:  # bing 第一处不同 V3.2是seqlen > args.original_seq_len
+         low, high = find_correction_range(beta_fast, beta_slow, dim, base, original_seq_len)
+         smooth = 1 - linear_ramp_factor(low, high, dim // 2)
+         freqs = freqs / factor * (1 - smooth) + freqs * smooth
+ 
+-    t = torch.arange(seqlen, device=torch.npu.current_device())
++    # fp64 on CPU: identical formula/op-order to the vllm-ascend rollout
++    # (precompute_freqs_cis), so both tables round to the same complex64
++    # bits; fp32 angles would drift ~2.4e-2 rad at 1M positions.
++    t = torch.arange(seqlen, dtype=torch.float64)
+     freqs = torch.outer(t, freqs)
+-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
++    freqs_cis = torch.polar(torch.ones_like(freqs), freqs).to(torch.complex64)
+ 
+-    return freqs_cis
++    result = freqs_cis.to(device)
++    _DEEPSEEK4_ROPE_TABLE_CACHE[key] = result
++    return result
+diff --git a/mindspeed_llm/core/models/deepseek4/deepseek4_model.py b/mindspeed_llm/core/models/deepseek4/deepseek4_model.py
+old mode 100644
+new mode 100755
+index cae051fd..2446e07d
+--- a/mindspeed_llm/core/models/deepseek4/deepseek4_model.py
++++ b/mindspeed_llm/core/models/deepseek4/deepseek4_model.py
+@@ -274,7 +274,8 @@ class DeepSeek4Model(MegatronCoreGPTModel):
+             compress_rope_theta = args.compress_rope_theta  # for compress_ratio>1
+             rotary_pos_emb_comp = self.rotary_pos_emb(
+                 args.qk_pos_emb_head_dim,
+-                args.rope_scaling_original_max_position_embeddings,
++                # table spans the full yarn-extended context
++                args.max_position_embeddings,
+                 args.original_seq_len,
+                 compress_rope_theta,
+                 args.rope_factor,
+@@ -283,14 +284,18 @@ class DeepSeek4Model(MegatronCoreGPTModel):
+             )
+             rotary_pos_emb_no_comp = self.rotary_pos_emb(
+                 args.qk_pos_emb_head_dim,
+-                args.rope_scaling_original_max_position_embeddings,
++                # table spans the full yarn-extended context
++                args.max_position_embeddings,
+                 0,
+                 rope_theta,
+                 args.rope_factor,
+                 args.beta_fast,
+                 args.beta_slow,
+             )
+-            rotary_pos_emb = torch.stack((rotary_pos_emb_comp, rotary_pos_emb_no_comp))
++            rotary_pos_emb = self.rotary_pos_emb_cache.get('dsv4_tables')
++            if rotary_pos_emb is None:
++                rotary_pos_emb = torch.stack((rotary_pos_emb_comp, rotary_pos_emb_no_comp))
++                self.rotary_pos_emb_cache['dsv4_tables'] = rotary_pos_emb
+         else:
+             pass
+         if self.pre_process:

@@ -1,23 +1,20 @@
 # DeepSeek-V4 on Ascend NPU
-基于DeepSeek-V4-Flash模型在NPU上进行RLHF后训练的样例。
-
-本用例基于8 x Atlas A3 实现， 开发者可以参照调整。
+基于DeepSeek-V4-Flash模型在NPU上进行RLHF后训练的样例。本用例基于8 x Atlas A3 实现，开发者可以参照调整。
 
 ## 环境版本
-由于当前部分组件依赖尚未发布正式版本，我们将提供用于快速复现的基础镜像及部署方法，获取参照环境部署章节，主要依赖版本如下
-后续会更新正式版本
-
+我们将提供用于快速复现的基础镜像及部署方法，获取参照环境部署章节，主要依赖版本如下:
 | 依赖组件                 | 版本            | 
 | :--------------------- | :------         | 
 | CANN                   | 9.1.0           | 
 | PyTorch                | 2.10.0          | 
 | torch\_npu             | 2.10.0          | 
-| verl                   | 809f2d8         | 
+| verl                   | release/v0.9.0  | 
 | vLLM                   | v0.23.0         | 
 | vLLM-Ascend            | releases/0.23.0 | 
-| MindSpeed-LLM          | 99f7fc1 (master)| 
-| MindSpeed              | 1becca8 (master)| 
-| Megatron               | core_v0.12.1    | 
+| MindSpeed-LLM          | master          | 
+| MindSpeed              | master          | 
+| Megatron               | core_v0.12.1    |
+| mbridge                | v0.15.1         | 
 
 
 ### 环境部署
