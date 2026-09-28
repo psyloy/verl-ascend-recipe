@@ -41,6 +41,9 @@ def _build_patched_actors(ray):
         def __init__(self, config):
             self.config = config
 
+        def _init_resource_pools(self):
+            return "native-resource-pools"
+
     class NativeRollouter(Separate):
         def __init__(self, config):
             super().__init__(config)
@@ -66,6 +69,20 @@ def _build_patched_actors(ray):
         def _initialize_components(self, config):
             return "native-main"
 
+    class FakeResourcePool:
+        """@wrap target for RayResourcePool.get_placement_groups."""
+
+        name_prefix = "trainer_pool"
+        _store = [2]
+        max_colocate_count = 3
+        use_gpu = True
+        accelerator_type = None
+        detached = False
+        pgs = None
+
+        def get_placement_groups(self, *args, **kwargs):
+            return "native-pgs"
+
     original = {
         "FullyAsyncRollouter": ray.remote(num_cpus=10, max_concurrency=100)(NativeRollouter),
         "FullyAsyncTrainer": ray.remote(num_cpus=10)(NativeTrainer),
@@ -80,6 +97,7 @@ def _build_patched_actors(ray):
         ray=ray,
         OmegaConf=ConfigAccess,
         SeparateRayPPOTrainer=Separate,
+        RayResourcePool=FakeResourcePool,
         fully_async_main=main_module,
         fully_async_rollouter=rollouter_module,
         fully_async_trainer=trainer_module,
@@ -100,7 +118,7 @@ def _build_patched_actors(ray):
             finalizing = True
         if finalizing:
             nodes.append(node)
-        elif isinstance(node, ast.ClassDef) and node.name == "_FtNodeAffinityRemote":
+        elif isinstance(node, ast.ClassDef) and node.name == "_FtNonInferenceRemote":
             nodes.append(node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
             node.name == "_sep_trainer_init"
@@ -123,7 +141,20 @@ class FullyAsyncRayPatchTests(unittest.TestCase):
         cls.ray = ray
         cls.started_here = not ray.is_initialized()
         if cls.started_here:
-            ray.init(num_cpus=1, include_dashboard=False, log_to_driver=False)
+            # Single-node test cluster: label the local node (which is also
+            # the head) so the strict non-inference placement constraint has
+            # a matching scheduling target. In production only training
+            # workers carry the label; the head never does and is therefore
+            # excluded by the hard constraint.
+            try:
+                ray.init(
+                    num_cpus=1,
+                    include_dashboard=False,
+                    log_to_driver=False,
+                    labels={"verl.io/role": "trainer"},
+                )
+            except TypeError:  # older Ray without the labels kwarg
+                ray.init(num_cpus=1, include_dashboard=False, log_to_driver=False)
         try:
             cls.patched, cls.original = _build_patched_actors(ray)
         except Exception:
@@ -387,6 +418,112 @@ class FullyAsyncTrainerSampleFilterTests(unittest.TestCase):
         trainer = self.trainer_cls(SimpleNamespace())
 
         self.assertEqual(asyncio.run(trainer._get_samples_from_queue()), "native-samples")
+
+    def test_rollout_pg_label_selector(self):
+        selector_fn = self.patched["_ft_rollout_pg_label_selector"]
+        trainer_selector_fn = self.patched["_ft_trainer_pg_label_selector"]
+
+        # No cached config (run_ppo never ran): stay native.
+        saved = self.patched.get("_ft_label_cfg")
+        self.patched["_ft_label_cfg"] = None
+        self.assertIsNone(selector_fn("trainer_pool"))
+        self.assertIsNone(selector_fn("rollout_pool_0abc"))  # warns once, stays native
+        self.assertIsNone(trainer_selector_fn("rollout_pool_0abc"))
+        self.assertIsNone(trainer_selector_fn("trainer_pool"))  # warns once, stays native
+
+        # Cached config: standalone-rollout pools get the rollout selector,
+        # every other pool (training GPU workers, CPU coordination pools)
+        # gets the trainer selector, so no training bundle can occupy a
+        # rollout pod.
+        self.patched["_ft_label_cfg"] = {"key": "verl.io/role", "trainer": "trainer", "rollout": "rollout"}
+        self.assertIsNone(selector_fn("trainer_pool"))
+        self.assertIsNone(selector_fn("reward_pool"))
+        self.assertIsNone(selector_fn("teacher_pool"))
+        self.assertEqual(selector_fn("rollout_pool_0abc"), {"verl.io/role": "rollout"})
+        self.assertEqual(selector_fn("rollout_reward_pool_0abc"), {"verl.io/role": "rollout"})
+        self.assertEqual(selector_fn("rollout_teacher_pool_0abc"), {"verl.io/role": "rollout"})
+        self.assertIsNone(trainer_selector_fn("rollout_pool_0abc"))
+        self.assertEqual(trainer_selector_fn("trainer_pool"), {"verl.io/role": "trainer"})
+        self.assertEqual(trainer_selector_fn("reward_pool"), {"verl.io/role": "trainer"})
+        self.assertEqual(trainer_selector_fn("teacher_pool"), {"verl.io/role": "trainer"})
+
+        # Empty value disables the corresponding constraint.
+        self.patched["_ft_label_cfg"] = {"key": "verl.io/role", "trainer": "trainer", "rollout": ""}
+        self.assertIsNone(selector_fn("rollout_pool_0abc"))
+        self.patched["_ft_label_cfg"] = {"key": "verl.io/role", "trainer": "", "rollout": "rollout"}
+        self.assertIsNone(trainer_selector_fn("trainer_pool"))
+        self.patched["_ft_label_cfg"] = saved
+
+    def test_rollout_pg_created_with_label_selector(self):
+        try:
+            import importlib
+
+            # importlib (not `import ray.util.placement_group as ...`): the
+            # module attribute on ray.util is shadowed by a function of the
+            # same name.
+            pg_module = importlib.import_module("ray.util.placement_group")
+            import verl.single_controller.ray.base as ray_base
+        except ImportError:
+            self.skipTest("verl.single_controller is not importable")
+
+        pool_cls = self.patched["RayResourcePool"]
+        captured = {}
+
+        class FakePG:
+            def __init__(self, ready_ref, **kwargs):
+                self.ready_ref = ready_ref
+                captured.update(kwargs)
+
+            def ready(self):
+                return self.ready_ref
+
+        def fake_placement_group(**kwargs):
+            return FakePG(ready_ref=self.ray.put(1), **kwargs)
+
+        saved = self.patched.get("_ft_label_cfg")
+        saved_nodes = self.ray.nodes
+        self.patched["_ft_label_cfg"] = {"key": "verl.io/role", "trainer": "trainer", "rollout": "rollout"}
+
+        # The strict whitelist check must see alive nodes carrying the role
+        # labels (a real cluster would; stand two in here).
+        self.ray.nodes = lambda: [
+            {"Alive": True, "NodeManagerAddress": "10.0.0.1", "Labels": {"verl.io/role": "trainer"}},
+            {"Alive": True, "NodeManagerAddress": "10.0.0.2", "Labels": {"verl.io/role": "rollout"}},
+        ]
+        orig_create, orig_sort = pg_module.placement_group, ray_base.sort_placement_group_by_node_ip
+        pg_module.placement_group = fake_placement_group
+        ray_base.sort_placement_group_by_node_ip = lambda pgs: pgs
+        try:
+            # Trainer pool: every bundle pinned to trainer nodes (a training
+            # bundle must never occupy a rollout pod).
+            trainer_pool = pool_cls()
+            trainer_pool.name_prefix = "trainer_pool"
+            trainer_pool.get_placement_groups()
+            self.assertEqual(
+                captured["bundle_label_selector"], [{"verl.io/role": "trainer"}] * len(captured["bundles"])
+            )
+            self.assertEqual(captured["bundles"], [{"CPU": 3, "GPU": 1}] * 2)
+            self.assertTrue(captured["name"].startswith("trainer_pool"))
+
+            captured.clear()
+
+            # Standalone rollout pool: every bundle carries the rollout selector.
+            rollout_pool = pool_cls()
+            rollout_pool.name_prefix = "rollout_pool_0abc"
+            rollout_pool.get_placement_groups()
+            self.assertEqual(
+                captured["bundle_label_selector"], [{"verl.io/role": "rollout"}] * len(captured["bundles"])
+            )
+            self.assertEqual(captured["bundles"], [{"CPU": 3, "GPU": 1}] * 2)
+            self.assertEqual(captured["strategy"], "STRICT_PACK")
+            self.assertTrue(captured["name"].startswith("rollout_pool_0abc"))
+            self.assertEqual(len(rollout_pool.pgs), 1)
+            self.assertIsInstance(rollout_pool.pgs[0], FakePG)
+        finally:
+            pg_module.placement_group = orig_create
+            ray_base.sort_placement_group_by_node_ip = orig_sort
+            self.ray.nodes = saved_nodes
+            self.patched["_ft_label_cfg"] = saved
 
 
 class FullyAsyncLauncherTests(unittest.TestCase):
