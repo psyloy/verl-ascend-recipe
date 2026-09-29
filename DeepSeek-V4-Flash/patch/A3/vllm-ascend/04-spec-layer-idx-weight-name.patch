@@ -1,0 +1,22 @@
+diff --git a/vllm_ascend/models/deepseek_v4.py b/vllm_ascend/models/deepseek_v4.py
+index b99fd94db..15a67ee42 100644
+--- a/vllm_ascend/models/deepseek_v4.py
++++ b/vllm_ascend/models/deepseek_v4.py
+@@ -24,6 +24,7 @@
+ # limitations under the License.
+ #
+ import math
++import re
+ import typing
+ from collections.abc import Callable, Iterable
+ from itertools import islice
+@@ -297,6 +298,9 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = F
+ def get_spec_layer_idx_from_weight_name(config: DeepseekV2Config | DeepseekV3Config, weight_name: str) -> int | None:
+     if weight_name.startswith("mtp."):
+         return 0
++    m = re.match(r"(?:model\.)?layers\.(\d+)\.", weight_name)
++    if m and int(m.group(1)) >= config.num_hidden_layers:
++        return int(m.group(1))
+     return None
+ 
+ 

@@ -1,31 +1,29 @@
 # DeepSeek-V4 on Ascend NPU
-基于DeepSeek-V4-Flash模型在NPU上进行RLHF后训练的样例。
-
-本用例基于8 x Atlas A3 实现， 开发者可以参照调整。
+基于DeepSeek-V4-Flash模型在NPU上进行RL后训练的样例。本用例基于8 x Atlas A3 实现，开发者可以参照调整。
 
 ## 环境版本
-由于当前部分组件依赖尚未发布正式版本，我们将提供用于快速复现的基础镜像及部署方法，获取参照环境部署章节，主要依赖版本如下
-后续会更新正式版本
+我们将提供用于快速复现的基础镜像及部署方法，获取参照环境部署章节，主要依赖版本如下:
 
-| 依赖组件                 | 版本            | 
-| :--------------------- | :------         | 
-| CANN                   | 9.1.0           | 
-| PyTorch                | 2.10.0          | 
-| torch\_npu             | 2.10.0          | 
-| verl                   | 809f2d8         | 
-| vLLM                   | v0.23.0         | 
-| vLLM-Ascend            | releases/0.23.0 | 
-| MindSpeed-LLM          | 99f7fc1 (master)| 
-| MindSpeed              | 1becca8 (master)| 
-| Megatron               | core_v0.12.1    | 
+| 依赖组件                 | 版本                | 
+| :--------------------- | :------------------ | 
+| CANN                   | 9.1.0               | 
+| PyTorch                | 2.10.0              | 
+| torch\_npu             | 2.10.0              | 
+| verl                   | release/v0.9.0      | 
+| mbridge                | v0.15.1             | 
+| vLLM                   | v0.23.0             | 
+| vLLM-Ascend            | releases/0.23.0     | 
+| MindSpeed-LLM          | 26.2.0              | 
+| MindSpeed              | 26.2.0_core_r0.12.1 | 
+| Megatron               | core_v0.12.1        | 
 
 
 ### 环境部署
-我们基于VLLM+MindSpeed-LLM后端支持DeepSeekV4的强化学习, 使用verl日构建开源镜像作为基础镜像，请使用此镜像作为基础镜像安装环境
+基于VLLM+MindSpeed-LLM后端支持DeepSeekV4的强化学习, 使用verl日构建开源镜像作为基础镜像，请使用此镜像作为基础镜像安装环境
 
 ```bash
 
-# verl日构建开源镜像
+# verl日构建开源镜像作为基础镜像
 docker pull quay.io/ascend/verl:verl-9.0.0-a3-ubuntu22.04-py3.11-latest
 
 # 创建容器
@@ -44,14 +42,7 @@ source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 # 安装环境依赖
 git clone https://github.com/verl-project/verl-ascend-recipe.git
-bash verl-ascend-recipe/DeepSeek-V4-Flash/install.sh
-
-# 创建软链接
-cd verl
-ln -s ../MindSpeed/mindspeed mindspeed
-ln -s ../MindSpeed-LLM/mindspeed_llm mindspeed_llm
-ln -s ../Megatron-LM/megatron megatron
-ln -s ../mbridge/mbridge mbridge
+bash verl-ascend-recipe/DeepSeek-V4-Flash/install_A3.sh
 ```
 
 ### 权重下载与反量化
@@ -83,6 +74,6 @@ bash ../verl-ascend-recipe/DeepSeek-V4-Flash/examples/ray_start.sh
 
 ### 训练效果
 
-长跑250步训练效果曲线示例：
+A3 长跑250步训练效果曲线示例：
 
 ![deepseekv4](./src/run_deepseek_v4_npu.jpg)

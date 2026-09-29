@@ -1,0 +1,45 @@
+diff --git a/verl/third_party/vllm/__init__.py b/verl/third_party/vllm/__init__.py
+index 505c9022..1e3bbfc4 100644
+--- a/verl/third_party/vllm/__init__.py
++++ b/verl/third_party/vllm/__init__.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import os
+ from importlib.metadata import PackageNotFoundError, version
+ 
+ from packaging import version as vs
+@@ -39,8 +40,8 @@ if package_version is None:
+             f"vllm versions are 0.18.0+"
+         )
+ elif is_npu_available:
+-    # sleep_mode=2 is not supported on vllm-ascend for now, will remove this restriction when this ability is ready.
+-    VLLM_SLEEP_LEVEL = 1
++    # sleep_mode=2 stays opt-in via VLLM_SLEEP_LEVEL (validated for DSV4 RL colocate).
++    VLLM_SLEEP_LEVEL = int(os.environ.get("VLLM_SLEEP_LEVEL", "1"))
+     from vllm import LLM
+     from vllm.distributed import parallel_state
+ elif vs.parse(package_version) >= vs.parse("0.18.0"):
+diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+index 55821b70..3cbb68c8 100644
+--- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+@@ -1098,10 +1102,14 @@ class vLLMHttpServer:
+         )
+         # MTP drafter-only weights are initialized by vLLM and are not guaranteed
+         # to be restored by actor weight sync after level 2 sleep discards them.
+-        # lora only update adapter weights, so set sleep level to 1
+-        # vllm_ascend not support sleep_level now. Enabling EP during training may lead to accuracy issues.
+-        if mtp_rollout_enabled or self.lora_as_adapter or is_torch_npu_available(check_device=False):
++        # lora only update adapter weights, so set sleep level to 1.
++        # On NPU the level is configurable via VLLM_SLEEP_LEVEL (default 1).
++        if mtp_rollout_enabled or self.lora_as_adapter:
+             sleep_level = 1
++        elif is_torch_npu_available(check_device=False):
++            from verl.third_party.vllm import VLLM_SLEEP_LEVEL
++
++            sleep_level = VLLM_SLEEP_LEVEL
+         else:
+             sleep_level = 2
+         await self.engine.sleep(level=sleep_level)

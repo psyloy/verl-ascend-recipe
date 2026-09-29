@@ -1,0 +1,22 @@
+diff --git a/verl/utils/vllm/npu_vllm_patch.py b/verl/utils/vllm/npu_vllm_patch.py
+index 7467fc37..fd5e46d4 100644
+--- a/verl/utils/vllm/npu_vllm_patch.py
++++ b/verl/utils/vllm/npu_vllm_patch.py
+@@ -80,7 +80,14 @@ def apply_npu_vllm_patches() -> None:
+         return
+ 
+     # Disable flash_attn in RotaryEmbedding (NPU)
+-    from vllm.model_executor.layers.fused_moe import FusedMoE
+-
+     patch_vllm013_rotary_emb()
+-    _patch_legacy_fused_moe_weight_loader(FusedMoE)
++
++    # The FusedMoE transpose wrapper is only valid for legacy vLLM (<0.15);
++    # on newer vLLM it scrambles NPU MoE weights (train/rollout kl ~= 1.85 on DSV4).
++    import vllm
++    from packaging import version
++
++    if version.parse(vllm.__version__) < version.parse("0.15.0"):
++        from vllm.model_executor.layers.fused_moe import FusedMoE
++
++        _patch_legacy_fused_moe_weight_loader(FusedMoE)

@@ -1,0 +1,21 @@
+diff --git a/mindspeed_llm/features_manager/moe/moe_router.py b/mindspeed_llm/features_manager/moe/moe_router.py
+index dd0af3d0..0f3cbeb2 100644
+--- a/mindspeed_llm/features_manager/moe/moe_router.py
++++ b/mindspeed_llm/features_manager/moe/moe_router.py
+@@ -53,9 +53,13 @@ class MoERouter(MindSpeedFeature):
+         if args.n_hash_layers > 0:
+             num_layers_per_pp_stage = args.num_layers // args.pipeline_model_parallel_size
+             if args.n_hash_layers > num_layers_per_pp_stage:
+-                raise ValueError(
+-                    f'n_hash_layers ({args.n_hash_layers}) cannot exceed the number of layers in one PP stage '
+-                    f'({num_layers_per_pp_stage}).'
++                # verl-ascend-recipe DSV4 4layer test model has num_hash_layers=3 with
++                # pp=2 (2 layers/stage); verified working on 5966485a (e5 runs, kl=0.0008).
++                # This guard was added upstream after the patch baseline (5cce9f57) and is
++                # over-strict for verl usage, so downgrade to a warning.
++                print(
++                    f'WARNING: n_hash_layers ({args.n_hash_layers}) exceeds layers per PP stage '
++                    f'({num_layers_per_pp_stage}); proceeding (upstream guard downgraded).'
+                 )
+ 
+             if (

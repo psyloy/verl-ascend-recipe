@@ -1,0 +1,49 @@
+--- a/vllm_ascend/ops/linear.py
++++ b/vllm_ascend/ops/linear.py
+@@ -80,6 +80,13 @@
+     return is_310p() and weight.ndim >= 2 and (weight.shape[-1] == 1 or weight.shape[-2] == 1)
+ 
+ 
++def _should_reshape_wo_a_to_3d(prefix: str) -> bool:
++    """Whether a DSV4 wo_a weight must be reshaped to
++    [n_local_groups, hidden_size, o_lora_rank] for npu_transpose_batchmatmul.
++    """
++    return "wo_a" in prefix and get_ascend_device_type() != AscendDeviceType.A5
++
++
+ class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
+     """Linear method without quantization"""
+ 
+@@ -95,6 +102,15 @@
+             # captured graph still points at the old tensor and sampling would
+             # use stale weights; copy in place instead.
+             replace_parameter(layer, "weight_fp32", new_fp32, prefer_copy=True)
++        # DSV4 wo_a is consumed by npu_transpose_batchmatmul in the 3D layout
++        # [n_local_groups, hidden_size, o_lora_rank]. Reshape it here so it
++        # applies to load-format=dummy too, where weight_loader never runs.
++        # Must happen before the NZ trans to keep the layout identical to the
++        # previous weight_loader-side reshape.
++        if _should_reshape_wo_a_to_3d(layer.prefix) and layer.weight.data.ndim == 2:
++            layer.weight.data = (
++                layer.weight.data.view(layer.n_local_groups, layer.o_lora_rank, -1).transpose(2, 1).contiguous()
++            )
+         if "conv1d" not in layer.prefix:
+             # 310P torch_npu rejects FRACTAL_NZ matmul when the weight-side
+             # matrix has n=1 or k=1. Keep scalar gates such as Qwen MoE's
+@@ -470,12 +486,12 @@
+         return super().forward(input_)
+ 
+     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
+-        if "wo_a" in self.prefix and get_ascend_device_type() != AscendDeviceType.A5:
++        if _should_reshape_wo_a_to_3d(self.prefix):
+             if self.weight.ndim == 2:
++                # Keep the raw 2D layout here. The 2D -> 3D reshape happens in
++                # process_weights_after_loading so it also runs for
++                # load-format=dummy, where weight_loader is never called.
+                 super().weight_loader(param, loaded_weight)
+-                self.weight.data = (
+-                    self.weight.data.view(self.n_local_groups, self.o_lora_rank, -1).transpose(2, 1).contiguous()
+-                )
+             else:
+                 # In RL update flows, wo_a can be loaded again after being
+                 # transformed into [n_local_groups, hidden_size, o_lora_rank].

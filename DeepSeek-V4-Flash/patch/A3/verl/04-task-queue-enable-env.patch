@@ -1,0 +1,12 @@
+diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+index 55821b70..3cbb68c8 100644
+--- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+@@ -1163,6 +1171,7 @@ class vLLMReplica(RolloutReplica):
+             env_vars = {
+                 **{var: "1" for var in get_platform().ray_noset_envvars()},
+                 **get_platform().rollout_env_vars(),
++                "TASK_QUEUE_ENABLE": os.environ.get("VLLM_ASCEND_TASK_QUEUE_ENABLE", "0"),
+             }
+ 
+             server = self.server_class.options(

@@ -1,0 +1,47 @@
+diff --git a/verl/workers/engine/mindspeed/transformer_impl.py b/verl/workers/engine/mindspeed/transformer_impl.py
+index 6fa78d90..8b257ff5 100644
+--- a/verl/workers/engine/mindspeed/transformer_impl.py
++++ b/verl/workers/engine/mindspeed/transformer_impl.py
+@@ -34,7 +34,6 @@ from ..base import EngineRegistry
+ from ..megatron import MegatronEngineWithLMHead, MegatronEngineWithValueHead
+ from .utils import (
+     apply_patch,
+-    gpt_model_provider,
+     reset_fp8_reuse_quantized_weight,
+ )
+ 
+@@ -140,6 +139,9 @@ class MindSpeedMegatronEngineWithLMHead(MegatronEngineWithLMHead):
+         from megatron.core.enums import ModelType
+         from megatron.training.training import get_model
+ 
++        # DSV4 uses its MindSpeed-LLM pretrain model_provider.
++        from mindspeed_llm.pretrain_deepseek4 import model_provider as gpt_model_provider
++
+         # For forward_only, we don't need optimizer, lr_scheduler, checkpoint_mananager
+         if self.engine_config.forward_only:
+             module = get_model(gpt_model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=False)
+@@ -147,7 +149,7 @@ class MindSpeedMegatronEngineWithLMHead(MegatronEngineWithLMHead):
+             module = get_model(gpt_model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=True)
+ 
+         if self.vanilla_bridge:
+-            self.bridge.load_weights(module, self.model_config.local_path)
++            self.bridge.load_weights(module, self.model_config.local_path, memory_efficient=True)
+         else:
+             raise ValueError(f"vanilla_bridge should be true now, but got {self.vanilla_bridge}")
+ 
+diff --git a/verl/workers/engine/mindspeed/utils.py b/verl/workers/engine/mindspeed/utils.py
+index 42e949d4..38ac0480 100644
+--- a/verl/workers/engine/mindspeed/utils.py
++++ b/verl/workers/engine/mindspeed/utils.py
+@@ -153,10 +153,8 @@ def add_mcore_arguments(all_config: dict) -> dict:
+ 
+ 
+ def apply_patch(model_config, engine_config, optimizer_config):
+-    model_config = get_base_mcore_config_from_model_config(model_config)
+-    optimizer_config = get_base_mcore_config_from_optim_config(optimizer_config)
+     engine_config = get_base_mcore_config_from_engine_config(engine_config)
+-    all_config = {**model_config, **optimizer_config, **engine_config}
++    all_config = {**engine_config}
+     mcore_config = add_mcore_arguments(all_config)
+     from mindspeed_llm.tasks.megatron_adaptor_v2 import repatch
+ 

@@ -1,0 +1,420 @@
+diff --git a/mbridge/core/bridge.py b/mbridge/core/bridge.py
+index 031e922..fa7c77d 100644
+--- a/mbridge/core/bridge.py
++++ b/mbridge/core/bridge.py
+@@ -1,7 +1,7 @@
+ # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+ import os
+ from abc import ABC
+-from typing import Callable, Generator
++from typing import Callable, Generator, Optional
+ 
+ import torch
+ from megatron.core.models.gpt.gpt_model import ModelType
+@@ -171,17 +171,14 @@ class Bridge(ABC):
+             # only tp_rank0/etp_rank0 load from disk, others load from tp_rank0/etp_rank0
+             to_load_from_disk = []
+             for local_name, hf_names in local_to_hf_map.items():
+-                if ".mlp.experts.linear_fc" in local_name:
++                if self._is_expert_weight_name(local_name):
+                     if self.mpu.etp_rank == 0:
+                         to_load_from_disk.extend(hf_names)
+                 else:
+                     if self.mpu.tp_rank == 0:
+                         to_load_from_disk.extend(hf_names)
+-                    else:
+-                        # special case for lm_head.weight
+-                        # if make value model, every tp rank will load lm_head.weight
+-                        if "lm_head.weight" in hf_names:
+-                            to_load_from_disk.extend(hf_names)
++                    elif {"lm_head.weight", "head.weight"} & set(hf_names):
++                        to_load_from_disk.extend(hf_names)
+ 
+             # load huggingface weights
+             if not memory_efficient:
+@@ -203,7 +200,12 @@ class Bridge(ABC):
+                     mcore_weight = self._weight_to_mcore_format(local_name, hf_weights)
+                 else:
+                     mcore_weight = None
+-                if hf_names[0] in {"lm_head.weight", "model.embed_tokens.weight"}:
++                if hf_names[0] in {
++                    "lm_head.weight",
++                    "head.weight",
++                    "model.embed_tokens.weight",
++                    "embed.weight",
++                }:
+                     if param.shape[0] == 1 and (
+                         mcore_weight is None or mcore_weight.shape[0] != 1
+                     ):
+@@ -211,7 +213,11 @@ class Bridge(ABC):
+                         continue
+ 
+                 param_to_load = torch.empty_like(param)
+-                if ".mlp.experts.linear_fc" in local_name:
++                if self._is_expert_gemm_name(local_name):
++                    self._load_gemm_weights_over_etp(
++                        local_name, mcore_weight, param_to_load
++                    )
++                elif self._is_expert_weight_name(local_name):
+                     # split mcore weights across etp
+                     if self.mpu.etp_rank == 0:
+                         mcore_weights_tp_split = self._weight_split_across_tp(
+@@ -294,6 +300,181 @@ class Bridge(ABC):
+         self.extra_args.update(kwargs)
+         self.config = self._build_config()
+ 
++    def _is_expert_weight_name(self, name: str) -> bool:
++        return (
++            ".mlp.experts.linear_fc" in name
++            or ".mlp.experts.local_experts" in name
++            or self._is_expert_gemm_name(name)
++        )
++
++    def _is_expert_gemm_name(self, name: str) -> bool:
++        return False
++
++    def _get_hf_experts_key(self) -> Optional[str]:
++        return None
++
++    def _is_tp_sharded(self, mcore_weights_name: str, param: torch.Tensor) -> bool:
++        return (
++            hasattr(param, "tensor_model_parallel") and param.tensor_model_parallel
++        )
++
++    def _weight_to_mcore_format_gemm(
++        self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
++    ) -> torch.Tensor:
++        raise NotImplementedError(
++            f"Unsupported GEMM expert parameter: {mcore_weights_name}"
++        )
++
++    def _iter_gemm_export_experts(
++        self,
++        mcore_weights_name: str,
++        mcore_weights: torch.Tensor,
++        num_experts_in_tensor: Optional[int] = None,
++        expert_offset: int = 0,
++    ) -> Generator[tuple[list[str], list[torch.Tensor]], None, None]:
++        raise NotImplementedError(
++            f"Unsupported GEMM expert parameter: {mcore_weights_name}"
++        )
++
++    def _iter_gemm_local_expert_blocks(
++        self, mcore_weights_name: str, mcore_weights: torch.Tensor
++    ) -> Generator[torch.Tensor, None, None]:
++        raise NotImplementedError(
++            f"Unsupported GEMM expert parameter: {mcore_weights_name}"
++        )
++
++    def _iter_gemm_etp_slices(
++        self, mcore_weights_name: str, mcore_weights: torch.Tensor
++    ) -> Generator[torch.Tensor, None, None]:
++        raise NotImplementedError(
++            f"Unsupported GEMM expert parameter: {mcore_weights_name}"
++        )
++
++    @staticmethod
++    def _empty_device_cache(device: torch.device) -> None:
++        if device.type == "cuda":
++            torch.cuda.empty_cache()
++        elif device.type == "npu":
++            npu = getattr(torch, "npu", None)
++            if npu is not None and hasattr(npu, "empty_cache"):
++                npu.empty_cache()
++
++    def _load_gemm_weights_over_etp(
++        self,
++        local_name: str,
++        mcore_weight: torch.Tensor,
++        param_to_load: torch.Tensor,
++    ) -> None:
++        if self.mpu.etp_size == 1:
++            param_to_load.copy_(mcore_weight.to(param_to_load.device))
++            return
++
++        etp_group = self.mpu.etp_group
++        if self.mpu.etp_rank == 0:
++            slices = self._iter_gemm_etp_slices(
++                local_name, mcore_weight.to(param_to_load.device)
++            )
++            local_slice = None
++            for rank, weight_slice in enumerate(slices):
++                weight_slice = weight_slice.to(
++                    device=param_to_load.device, dtype=param_to_load.dtype
++                ).contiguous()
++                if rank == 0:
++                    local_slice = weight_slice
++                else:
++                    torch.distributed.send(
++                        weight_slice,
++                        dst=torch.distributed.get_global_rank(etp_group, rank),
++                        group=etp_group,
++                    )
++            param_to_load.copy_(local_slice)
++        else:
++            torch.distributed.recv(
++                param_to_load,
++                src=torch.distributed.get_global_rank(etp_group, 0),
++                group=etp_group,
++            )
++
++    def _export_gemm_weights(
++        self, name: str, broad_pp_param: torch.Tensor
++    ) -> Generator[tuple[str, torch.Tensor], None, None]:
++        hf_experts_key = self._get_hf_experts_key()
++        if not hf_experts_key:
++            raise RuntimeError(f"Missing HF expert key for {name}")
++
++        if self.mpu.etp_size > 1:
++            etp_params = [
++                torch.empty_like(broad_pp_param) for _ in range(self.mpu.etp_size)
++            ]
++            torch.distributed.all_gather(
++                etp_params, broad_pp_param, group=self.mpu.etp_group
++            )
++            own_merged = self._weight_merge_across_tp(
++                name, etp_params, broad_pp_param
++            )
++            del etp_params
++        else:
++            own_merged = self._weight_merge_across_tp(
++                name, [broad_pp_param], broad_pp_param
++            )
++        self._empty_device_cache(broad_pp_param.device)
++
++        # Every rank in every EP group all_gathers each expert block and
++        # yields the full global expert sequence, so all ranks produce an
++        # identical weight-name stream (verl relies on this: each training
++        # rank streams independently to its paired inference engine).
++        num_experts_per_rank = self.config.num_moe_experts // self.mpu.ep_size
++
++        def splice_expert_id(hf_name: str, global_expert_id: int) -> str:
++            prefix, suffix = hf_name.split(hf_experts_key, 1)
++            suffix = suffix.split(".", 1)[1]
++            return f"{prefix}{hf_experts_key}{global_expert_id}.{suffix}"
++
++        for local_expert_id, block in enumerate(
++            self._iter_gemm_local_expert_blocks(name, own_merged)
++        ):
++            if self.mpu.ep_size > 1:
++                gathered = [
++                    torch.empty_like(block) for _ in range(self.mpu.ep_size)
++                ]
++                torch.distributed.all_gather(
++                    gathered, block.contiguous(), group=self.mpu.ep_group
++                )
++            else:
++                gathered = [block]
++            for ep_rank in range(self.mpu.ep_size):
++                global_expert_id = num_experts_per_rank * ep_rank + local_expert_id
++                for hf_names, hf_weights in self._iter_gemm_export_experts(
++                    name,
++                    gathered[ep_rank],
++                    num_experts_in_tensor=1,
++                    expert_offset=local_expert_id,
++                ):
++                    converted_names = [
++                        splice_expert_id(hf_name, global_expert_id)
++                        for hf_name in hf_names
++                    ]
++                    yield from zip(converted_names, hf_weights)
++            del gathered
++            self._empty_device_cache(broad_pp_param.device)
++
++        del own_merged
++        self._empty_device_cache(broad_pp_param.device)
++        npu = getattr(torch, "npu", None)
++        if broad_pp_param.device.type == "npu" and npu is not None:
++            npu.synchronize()
++
++    def _extra_export_keys(
++        self, model: torch.nn.Module, existing_keys: set[str]
++    ) -> list[str]:
++        return [
++            key
++            for key in model.state_dict()
++            if "_extra_state" not in key
++            and "expert_bias" in key
++            and key not in existing_keys
++        ]
++
+     def export_weights(
+         self, models: list[torch.nn.Module]
+     ) -> Generator[tuple[str, torch.Tensor], None, None]:
+@@ -310,13 +491,7 @@ class Bridge(ABC):
+                 # there is a bug in megatron GPTModel
+                 # decoder.layers[n].mlp.router.expert_bias" in GPTModel is not registered in named_parameter, but in state_dict().
+                 # for now we patch it by adding those keys to extra_keys.
+-                extra_keys = [
+-                    x
+-                    for x in model.state_dict().keys()
+-                    if "_extra_state" not in x
+-                    and "expert_bias" in x
+-                    and x not in existing_keys
+-                ]
++                extra_keys = self._extra_export_keys(model, existing_keys)
+                 for name in extra_keys:
+                     yield name, model.state_dict()[name].to(torch.cuda.current_device())
+ 
+@@ -326,13 +501,7 @@ class Bridge(ABC):
+             for name, param in model.named_parameters():
+                 existing_keys.add(name)
+                 weights_names.append((self.mpu.pp_rank, vpp_rank, name))
+-            extra_keys = [
+-                x
+-                for x in model.state_dict().keys()
+-                if "_extra_state" not in x
+-                and "expert_bias" in x
+-                and x not in existing_keys
+-            ]
++            extra_keys = self._extra_export_keys(model, existing_keys)
+             for name in extra_keys:
+                 weights_names.append((self.mpu.pp_rank, vpp_rank, name))
+ 
+@@ -360,8 +529,12 @@ class Bridge(ABC):
+             name = broadcast_str_from_megatron_pp(name)
+             broad_pp_param = broadcast_from_megatron_pp(param)
+ 
++            if self._is_expert_gemm_name(name):
++                yield from self._export_gemm_weights(name, broad_pp_param)
++                continue
++
+             # EP
+-            if ".mlp.experts.linear_fc" in name and self.mpu.ep_size > 1:
++            if self._is_expert_weight_name(name) and self.mpu.ep_size > 1:
+                 num_experts = self.config.num_moe_experts
+                 num_experts_per_rank = num_experts // self.mpu.ep_size
+                 infer_params = [
+@@ -371,16 +544,21 @@ class Bridge(ABC):
+                     infer_params, broad_pp_param, group=self.mpu.ep_group
+                 )
+ 
+-                name_prefix, local_expert_id = name.split(".weight")
+-                local_expert_id = int(local_expert_id)
+-                global_expert_ids = [
+-                    num_experts_per_rank * ep_rank + local_expert_id
+-                    for ep_rank in range(self.mpu.ep_size)
+-                ]
+-                global_expert_names = [
+-                    f"{name_prefix}.weight{expert_id}"
+-                    for expert_id in global_expert_ids
+-                ]
++                if ".mlp.experts.local_experts." in name:
++                    name_left, name_right = name.split(".local_experts.", 1)
++                    local_expert_id, name_suffix = name_right.split(".", 1)
++                    local_expert_id = int(local_expert_id)
++                    global_expert_names = [
++                        f"{name_left}.local_experts.{num_experts_per_rank * ep_rank + local_expert_id}.{name_suffix}"
++                        for ep_rank in range(self.mpu.ep_size)
++                    ]
++                else:
++                    name_prefix, local_expert_id = name.split(".weight")
++                    local_expert_id = int(local_expert_id)
++                    global_expert_names = [
++                        f"{name_prefix}.weight{num_experts_per_rank * ep_rank + local_expert_id}"
++                        for ep_rank in range(self.mpu.ep_size)
++                    ]
+ 
+                 for name, param in zip(global_expert_names, infer_params):
+                     if self.mpu.etp_size > 1:
+@@ -405,10 +583,7 @@ class Bridge(ABC):
+                 continue
+ 
+             # TP
+-            if (
+-                hasattr(broad_pp_param, "tensor_model_parallel")
+-                and broad_pp_param.tensor_model_parallel
+-            ):
++            if self._is_tp_sharded(name, broad_pp_param):
+                 # allocate a new tensor with proper size
+                 if self.mpu.tp_size <= 1:
+                     infer_params = [broad_pp_param]
+@@ -512,7 +687,16 @@ class Bridge(ABC):
+             }
+             for k in ret.keys():
+                 v = ret[k]
+-                if ".mlp.experts.linear_fc" in v:
++                if ".mlp.experts.local_experts." in v:
++                    name_left, name_right = v.split(".local_experts.", 1)
++                    local_expert_id, name_suffix = name_right.split(".", 1)
++                    global_expert_idx = local_expert_to_global_expert[
++                        int(local_expert_id)
++                    ]
++                    ret[k] = (
++                        f"{name_left}.local_experts.{global_expert_idx}.{name_suffix}"
++                    )
++                elif ".mlp.experts.linear_fc" in v:
+                     name_prefix, local_expert_id = v.split(".weight")
+                     global_expert_idx = local_expert_to_global_expert[
+                         int(local_expert_id)
+@@ -743,6 +927,9 @@ class Bridge(ABC):
+             return hf_names, [gate, up]
+         raise NotImplementedError(f"Unsupported parameter name: {mcore_weights_name}")
+ 
++    def _preserve_hf_dtype(self, mcore_weights_name: str) -> bool:
++        return "expert_bias" in mcore_weights_name
++
+     def _weight_to_mcore_format(
+         self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
+     ) -> torch.Tensor:
+@@ -767,12 +954,17 @@ class Bridge(ABC):
+         if (
+             hasattr(self, "dtype")
+             and self.dtype is not None
+-            and "expert_bias" not in mcore_weights_name
++            and not self._preserve_hf_dtype(mcore_weights_name)
+         ):
+             hf_weights = [
+                 w.to(self.dtype) if w.dtype != self.dtype else w for w in hf_weights
+             ]
+ 
++        if self._is_expert_gemm_name(mcore_weights_name):
++            return self._weight_to_mcore_format_gemm(
++                mcore_weights_name, hf_weights
++            )
++
+         if len(hf_weights) == 1:
+             # pad embeding and output layer
+             if self.make_vocab_size_divisible_by is not None and (
+@@ -852,7 +1044,10 @@ class Bridge(ABC):
+         if self.mpu.tp_size == 1:
+             assert len(mcore_weights) == 1
+             return mcore_weights[0]
+-        if "mlp.experts.linear_fc" in mcore_weights_name:
++        if (
++            "mlp.experts.linear_fc" in mcore_weights_name
++            or "mlp.experts.local_experts" in mcore_weights_name
++        ):
+             assert len(mcore_weights) == self.mpu.etp_size
+         else:
+             assert len(mcore_weights) == self.mpu.tp_size
+@@ -880,7 +1075,13 @@ class Bridge(ABC):
+             up = torch.cat(up_lst, dim=0)
+             ret = torch.cat((gate, up), dim=0)
+ 
+-        elif "mlp.experts.linear_fc2.weight" in mcore_weights_name:  # moe
++        elif (
++            "mlp.experts.linear_fc2.weight" in mcore_weights_name
++            or (
++                "mlp.experts.local_experts" in mcore_weights_name
++                and "linear_fc2.weight" in mcore_weights_name
++            )
++        ):
+             ret = torch.cat(mcore_weights, dim=1)
+         else:
+             assert (
+@@ -928,7 +1129,13 @@ class Bridge(ABC):
+             gates = gate.chunk(tp_split_size)
+             ups = up.chunk(tp_split_size)
+             ret = [torch.cat([g, u], dim=0) for g, u in zip(gates, ups)]
+-        elif "mlp.experts.linear_fc2.weight" in mcore_weights_name:  # moe
++        elif (
++            "mlp.experts.linear_fc2.weight" in mcore_weights_name
++            or (
++                "mlp.experts.local_experts" in mcore_weights_name
++                and "linear_fc2.weight" in mcore_weights_name
++            )
++        ):
+             ret = mcore_weights.chunk(tp_split_size, dim=1)
+         else:
+             if param.shape == mcore_weights.shape:

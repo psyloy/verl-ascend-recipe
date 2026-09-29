@@ -1,0 +1,17 @@
+diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+index 55821b70..3cbb68c8 100644
+--- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
++++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
+@@ -64,7 +64,11 @@ from verl.workers.rollout.vllm_rollout.utils import (
+     get_vllm_max_lora_rank,
+ )
+ 
+-_VLLM_VERSION = version.parse(vllm.__version__)
++try:
++    _VLLM_VERSION = version.parse(vllm.__version__)
++except Exception:
++    # Custom vllm builds may have unparseable version strings.
++    _VLLM_VERSION = version.parse("0.23.0")
+ 
+ if os.getenv("VERL_USE_GPT_OSS", "0") == "1":
+     get_encoding()

@@ -1,0 +1,147 @@
+diff --git a/vllm_ascend/ops/rope_dsv4.py b/vllm_ascend/ops/rope_dsv4.py
+index 8727abf4d..570c09236 100644
+--- a/vllm_ascend/ops/rope_dsv4.py
++++ b/vllm_ascend/ops/rope_dsv4.py
+@@ -15,11 +15,34 @@ class RopeGlobalState:
+         self.spec_runtime_buffer: dict[str, dict[str, tuple[torch.Tensor, torch.Tensor]]] = {}
+         self.layer_info: dict[str, tuple[str, list[str]]] = {}
+         self.registry_summary: dict[str, set] = {}
++        # CPU master copies of full_rope_cache entries. The device-side cache
++        # lives in the CaMem pool and is discarded without backup by a level-2
++        # sleep; CPU memory is never touched by sleep, so these copies are the
++        # source of truth used by restore_rope_caches_after_sleep().
++        self.cpu_master: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+ 
+ 
+ _ROPE_STATE = RopeGlobalState()
+ 
+ 
++def restore_rope_caches_after_sleep():
++    """Restore device-side RoPE cos/sin tables from their CPU master copies.
++
++    Level-2 sleep releases the pool allocations backing full_rope_cache and
++    wake_up remaps them to zeroed pages. The tables are static content (they
++    depend only on the RoPE config, never on weights), so copying the CPU
++    masters back in place fully repairs them. The copy_() targets the existing
++    storage, keeping addresses stable for captured ACL graphs.
++    """
++    for config_key, (cpu_cos, cpu_sin) in _ROPE_STATE.cpu_master.items():
++        entry = _ROPE_STATE.full_rope_cache.get(config_key)
++        if entry is None:
++            continue
++        dev_cos, dev_sin = entry
++        dev_cos.copy_(cpu_cos)
++        dev_sin.copy_(cpu_sin)
++
++
+ class RopeDataProxy:
+     def __init__(self, data_map, is_cos=True):
+         self._data = data_map
+@@ -187,4 +187,11 @@ class ComplexExpRotaryEmbedding(nn.Module):
+             _ROPE_STATE.full_rope_cache[config_key] = (cos.unsqueeze(1).unsqueeze(1), sin.unsqueeze(1).unsqueeze(1))
++            if vllm_config is not None and vllm_config.model_config.enable_sleep_mode:
++                # Keep a CPU master copy: level-2 sleep discards the device
++                # table without backup; it is restored in place at wake_up.
++                _ROPE_STATE.cpu_master[config_key] = (
++                    cos.unsqueeze(1).unsqueeze(1).cpu(),
++                    sin.unsqueeze(1).unsqueeze(1).cpu(),
++                )
+ 
+         use_eagle = (
+             vllm_config is not None
+diff --git a/vllm_ascend/ops/fused_moe/token_dispatcher.py b/vllm_ascend/ops/fused_moe/token_dispatcher.py
+index 1b6acbf8c..ef8897307 100644
+--- a/vllm_ascend/ops/fused_moe/token_dispatcher.py
++++ b/vllm_ascend/ops/fused_moe/token_dispatcher.py
+@@ -450,12 +450,24 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher[MoEAllToAllCombineMetadata]
+         self.num_local_experts = kwargs.get("num_local_experts", 0)
+ 
+         assert self.num_local_experts > 0, "Expected at least one expert"
++        # Keep the routing table on CPU as the single source of truth.
++        # Level-2 sleep releases pooled NPU allocations without any backup, so
++        # a device-resident copy created here would hold garbage after wake_up,
++        # while CPU memory is never touched by sleep. A fresh device copy is
++        # made on every dispatch in _preprocess() -- the table is only
++        # num_experts * 4 bytes, and that path already performs H2D/D2H
++        # synchronizations per call (hence is never captured into ACL graphs),
++        # so the refresh costs nothing measurable.
+         if self.num_local_experts > 1:
+-            self.expert_ids_per_ep_rank = torch.tensor(
++            self.expert_ids_per_ep_rank_cpu = torch.tensor(
+                 [i % self.num_local_experts for i in range(self.num_experts)],
+                 dtype=torch.int32,
+-                device=torch.npu.current_device(),
++                device="cpu",  # explicit: must stay off the NPU so sleep()
++                               # can never release it, regardless of any
++                               # global default-device setting
+             )
++        else:
++            self.expert_ids_per_ep_rank_cpu = None
+ 
+         local_expert_indices_offset = self.ep_rank * self.num_local_experts
+ 
+@@ -621,7 +633,9 @@ class TokenDispatcherWithAll2AllV(MoETokenDispatcher[MoEAllToAllCombineMetadata]
+             if num_global_tokens_per_local_expert is None:
+                 raise ValueError("num_global_tokens_per_local_expert must be set before operations.")
+             global_input_tokens_local_experts_indices = torch.repeat_interleave(
+-                self.expert_ids_per_ep_rank, num_global_tokens_per_local_expert.ravel()
++                self.expert_ids_per_ep_rank_cpu.to(
++                    num_global_tokens_per_local_expert.device),
++                num_global_tokens_per_local_expert.ravel(),
+             )
+         else:
+             torch.npu.synchronize()
+diff --git a/vllm_ascend/worker/worker.py b/vllm_ascend/worker/worker.py
+index 44be7c7d2..3ba42a1a4 100644
+--- a/vllm_ascend/worker/worker.py
++++ b/vllm_ascend/worker/worker.py
+@@ -223,6 +223,13 @@ class NPUWorker(WorkerBase):
+         cleanup_enabled = getattr(get_ascend_config(), "enable_sleep_mode_extra_cleanup", False)
+         if cleanup_enabled:
+             self.sleep_wakeup_manager.sleep()
++        elif level == 2 and getattr(self.model_runner, "use_aclgraph", False):
++            # ACL graphs capture pointers into the CaMem pool, which level-2
++            # sleep releases; drop them so wake_up re-captures against the
++            # remapped pool. HCCL groups survive level-2 sleep fine and are
++            # left untouched (their destroy/restore path is not reliable).
++            self.sleep_wakeup_manager.acl_graph.sleep()
++            self._graphs_dropped_on_sleep = True
+ 
+         allocator = CaMemAllocator.get_instance()
+         allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
+@@ -248,6 +255,14 @@ class NPUWorker(WorkerBase):
+         allocator = CaMemAllocator.get_instance()
+         allocator.wake_up(tags=tags)
+ 
++        # Level-2 sleep discards the pool-backed RoPE cos/sin tables held in
++        # rope_dsv4's module-global cache (deepseek_v4 DSA path). They are
++        # static, weight-independent content: restore them in place from the
++        # CPU master copies kept at model init.
++        from vllm_ascend.ops.rope_dsv4 import restore_rope_caches_after_sleep
++
++        restore_rope_caches_after_sleep()
++
+         hidden_size = self.vllm_config.model_config.hf_text_config.hidden_size
+         model = self.model_runner.model
+         if self.vllm_config.quant_config is None and (tags is None or "weights" in tags):
+@@ -278,6 +293,12 @@ class NPUWorker(WorkerBase):
+         cleanup_enabled = getattr(get_ascend_config(), "enable_sleep_mode_extra_cleanup", False)
+         if cleanup_enabled:
+             self.sleep_wakeup_manager.wakeup(tags)
++        elif getattr(self, "_graphs_dropped_on_sleep", False):
++            # verl wakes in two stages (weights -> weight sync -> kv_cache);
++            # only recapture once everything is remapped.
++            if tags is None or "kv_cache" in tags:
++                self._graphs_dropped_on_sleep = False
++            self.sleep_wakeup_manager.acl_graph.wakeup(tags)
+ 
+     def _check_weight_transfer_engine(self) -> None:
+         if self.weight_transfer_engine is None:
+@@ -608,6 +629,7 @@ class NPUWorker(WorkerBase):
+             self.torch_allocated / GiB_bytes,
+         )
+ 
++
+     def execute_model(
+         self,
+         scheduler_output: "SchedulerOutput",

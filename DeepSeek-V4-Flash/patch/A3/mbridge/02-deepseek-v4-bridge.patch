@@ -1,0 +1,521 @@
+diff --git a/mbridge/models/__init__.py b/mbridge/models/__init__.py
+index 65b2b8a..4f7104d 100644
+--- a/mbridge/models/__init__.py
++++ b/mbridge/models/__init__.py
+@@ -17,6 +17,7 @@ Classes:
+ # fmt: off
+ 
+ from .deepseek_v3 import DeepseekV3Bridge
++from .deepseek_v4 import DeepseekV4Bridge
+ from .llama import LLaMABridge
+ from .mimo import MimoBridge
+ from .mixtral import MixtralBridge
+diff --git a/mbridge/models/deepseek_v4.py b/mbridge/models/deepseek_v4.py
+new file mode 100644
+index 0000000..4fc68e3
+--- /dev/null
++++ b/mbridge/models/deepseek_v4.py
+@@ -0,0 +1,503 @@
++# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
++
++from typing import Generator, Optional
++
++import torch
++from megatron.core.transformer import MLATransformerConfig
++from megatron.core.transformer.enums import AttnBackend
++
++from ..core import register_model
++from .deepseek_v3 import DeepseekV3Bridge
++
++
++@register_model("deepseek_v4")
++class DeepseekV4Bridge(DeepseekV3Bridge):
++    _CONFIG_MAPPING = {
++        "num_layers": "num_hidden_layers",
++        "hidden_size": "hidden_size",
++        "num_attention_heads": "num_attention_heads",
++        "num_query_groups": "num_attention_heads",
++        "layernorm_epsilon": "rms_norm_eps",
++        "hidden_dropout": ("hidden_dropout", 0.0),
++        "kv_channels": ("head_dim", None),
++    }
++    _DIRECT_MAPPING = {
++        "embedding.word_embeddings.weight": "embed.weight",
++        "decoder.final_layernorm.weight": "norm.weight",
++        "final_layernorm.weight": "norm.weight",
++        "output_layer.weight": "head.weight",
++        "decoder.hc_head.hc_base": "hc_head_base",
++        "decoder.hc_head.hc_fn.weight": "hc_head_fn",
++        "decoder.hc_head.hc_scale": "hc_head_scale",
++        "hc_head.hc_base": "hc_head_base",
++        "hc_head.hc_fn.weight": "hc_head_fn",
++        "hc_head.hc_scale": "hc_head_scale",
++    }
++    _MLP_MAPPING = {
++        "pre_mlp_layernorm.weight": ["layers.{layer_number}.ffn_norm.weight"],
++        "mlp.router.tid2eid": ["layers.{layer_number}.ffn.gate.tid2eid"],
++        "mlp.shared_experts.linear_fc1.weight": [
++            "layers.{layer_number}.ffn.shared_experts.w1.weight",
++            "layers.{layer_number}.ffn.shared_experts.w3.weight",
++        ],
++        "mlp.shared_experts.linear_fc2.weight": [
++            "layers.{layer_number}.ffn.shared_experts.w2.weight"
++        ],
++        "mlp_mhc.hc_base": ["layers.{layer_number}.hc_ffn_base"],
++        "mlp_mhc.hc_scale": ["layers.{layer_number}.hc_ffn_scale"],
++        "mlp_mhc.hc_fn.weight": ["layers.{layer_number}.hc_ffn_fn"],
++        "mlp.router.weight": ["layers.{layer_number}.ffn.gate.weight"],
++        "mlp.router.expert_bias": ["layers.{layer_number}.ffn.gate.bias"],
++    }
++    _ATTENTION_MAPPING = {
++        "input_layernorm.weight": ["layers.{layer_number}.attn_norm.weight"],
++        "self_attention.attn_sink": ["layers.{layer_number}.attn.attn_sink"],
++        "self_attention.kv_layernorm.weight": [
++            "layers.{layer_number}.attn.kv_norm.weight"
++        ],
++        "self_attention.q_layernorm.weight": [
++            "layers.{layer_number}.attn.q_norm.weight"
++        ],
++        "self_attention.linear_kv.weight": ["layers.{layer_number}.attn.wkv.weight"],
++        "self_attention.linear_q_up_proj.weight": [
++            "layers.{layer_number}.attn.wq_b.weight"
++        ],
++        "self_attention.linear_q.weight": ["layers.{layer_number}.attn.wq_a.weight"],
++        "self_attention.linear_o_down_proj.weight": [
++            "layers.{layer_number}.attn.wo_a.weight"
++        ],
++        "self_attention.linear_o_up_proj.weight": [
++            "layers.{layer_number}.attn.wo_b.weight"
++        ],
++        "attn_mhc.hc_base": ["layers.{layer_number}.hc_attn_base"],
++        "attn_mhc.hc_scale": ["layers.{layer_number}.hc_attn_scale"],
++        "attn_mhc.hc_fn.weight": ["layers.{layer_number}.hc_attn_fn"],
++        "self_attention.compressor.ape": [
++            "layers.{layer_number}.attn.compressor.ape"
++        ],
++        "self_attention.compressor.wkv.weight": [
++            "layers.{layer_number}.attn.compressor.wkv.weight"
++        ],
++        "self_attention.compressor.wgate.weight": [
++            "layers.{layer_number}.attn.compressor.wgate.weight"
++        ],
++        "self_attention.compressor.norm.weight": [
++            "layers.{layer_number}.attn.compressor.norm.weight"
++        ],
++        "self_attention.indexer.wq_b.weight": [
++            "layers.{layer_number}.attn.indexer.wq_b.weight"
++        ],
++        "self_attention.indexer.kv_compressor.ape": [
++            "layers.{layer_number}.attn.indexer.compressor.ape"
++        ],
++        "self_attention.indexer.kv_compressor.wkv.weight": [
++            "layers.{layer_number}.attn.indexer.compressor.wkv.weight"
++        ],
++        "self_attention.indexer.kv_compressor.wgate.weight": [
++            "layers.{layer_number}.attn.indexer.compressor.wgate.weight"
++        ],
++        "self_attention.indexer.kv_compressor.norm.weight": [
++            "layers.{layer_number}.attn.indexer.compressor.norm.weight"
++        ],
++        "self_attention.indexer.weights_proj.weight": [
++            "layers.{layer_number}.attn.indexer.weights_proj.weight"
++        ],
++    }
++    _SHARED_STATE_DICT_MAPPING = {}
++    TransformerConfigClass = MLATransformerConfig
++
++    def _build_config(self):
++        hf_config = self.hf_config
++        mla_rope_config = {
++            "beta_fast": 32,
++            "beta_slow": 1,
++            "factor": 1,
++            "mscale": 1.0,
++            "mscale_all_dim": 1.0,
++            "original_max_position_embeddings": 4096,
++            "type": "rope",
++        }
++        if "rope_scaling" in hf_config and hf_config.rope_scaling is not None:
++            mla_rope_config.update(hf_config.rope_scaling)
++
++        mtp_args = {}
++        if "num_nextn_predict_layers" in hf_config:
++            mtp_args["mtp_num_layers"] = hf_config.num_nextn_predict_layers
++            mtp_args["mtp_loss_scaling_factor"] = 0.1
++
++        return self._build_base_config(
++            attention_backend=AttnBackend.fused,
++            layernorm_epsilon=hf_config.rms_norm_eps,
++            qk_layernorm=True,
++            moe_ffn_hidden_size=hf_config.moe_intermediate_size,
++            moe_token_dispatcher_type="alltoall",
++            moe_router_bias_update_rate=0.001,
++            moe_router_enable_expert_bias=True,
++            moe_router_topk=hf_config.num_experts_per_tok,
++            num_moe_experts=hf_config.n_routed_experts,
++            moe_shared_expert_intermediate_size=hf_config.moe_intermediate_size
++            * hf_config.n_shared_experts,
++            moe_aux_loss_coeff=getattr(hf_config, "aux_loss_alpha", 0.0),
++            moe_router_load_balancing_type="none",
++            moe_shared_expert_overlap=True,
++            moe_grouped_gemm=True,
++            moe_router_score_function=hf_config.scoring_func,
++            moe_router_pre_softmax=False,
++            moe_router_topk_scaling_factor=hf_config.routed_scaling_factor,
++            moe_layer_freq=[1] * hf_config.num_hidden_layers,
++            q_lora_rank=hf_config.q_lora_rank,
++            qk_pos_emb_head_dim=hf_config.qk_rope_head_dim,
++            v_head_dim=hf_config.head_dim,
++            rotary_base=hf_config.rope_theta,
++            rotary_scaling_factor=mla_rope_config["factor"],
++            rope_type=mla_rope_config["type"],
++            mscale=mla_rope_config["mscale"],
++            mscale_all_dim=mla_rope_config["mscale_all_dim"],
++            max_position_embeddings=mla_rope_config["original_max_position_embeddings"],
++            beta_fast=mla_rope_config["beta_fast"],
++            beta_slow=mla_rope_config["beta_slow"],
++            moe_router_dtype="fp32",
++            disable_bf16_reduced_precision_matmul=True,
++            persist_layer_norm=True,
++            bias_activation_fusion=True,
++            bias_dropout_fusion=True,
++            **mtp_args,
++        )
++
++    def _model_provider(self, post_model_creation_callbacks):
++        provider = super()._model_provider(post_model_creation_callbacks)
++
++        def wrapped_provider(pre_process, post_process, vp_stage=None):
++            model = provider(pre_process, post_process, vp_stage=vp_stage)
++            for name, param in model.named_parameters():
++                if "attn_sink" in name:
++                    param.tensor_model_parallel = True
++                    param.partition_dim = 0
++            return model
++
++        return wrapped_provider
++
++    def _is_tp_sharded(self, mcore_weights_name: str, param: torch.Tensor) -> bool:
++        return "attn_sink" in mcore_weights_name or super()._is_tp_sharded(
++            mcore_weights_name, param
++        )
++
++    def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
++        assert "_extra_state" not in mcore_weights_name
++        if mcore_weights_name in self._DIRECT_MAPPING:
++            return [self._DIRECT_MAPPING[mcore_weights_name]]
++        if "mtp" in mcore_weights_name:
++            return self._convert_mtp_param(mcore_weights_name)
++        if (
++            "self_attention" in mcore_weights_name
++            or "input_layernorm.weight" in mcore_weights_name
++            or "attn_mhc" in mcore_weights_name
++        ):
++            return self._weight_name_mapping_attention(mcore_weights_name)
++        if "mlp" in mcore_weights_name:
++            return self._weight_name_mapping_mlp(mcore_weights_name)
++        raise NotImplementedError(f"Unsupported parameter name: {mcore_weights_name}")
++
++    def _weight_name_mapping_mlp(self, name: str) -> list[str]:
++        layer_number = name.split(".")[2]
++        if ".mlp.experts.local_experts." in name:
++            expert_id = name.split(".local_experts.", 1)[1].split(".", 1)[0]
++            if "linear_fc1.weight" in name:
++                templates = [
++                    "layers.{layer_number}.ffn.experts.{expert_id}.w1.weight",
++                    "layers.{layer_number}.ffn.experts.{expert_id}.w3.weight",
++                ]
++            elif "linear_fc2.weight" in name:
++                templates = [
++                    "layers.{layer_number}.ffn.experts.{expert_id}.w2.weight"
++                ]
++            else:
++                raise NotImplementedError(f"Unsupported parameter name: {name}")
++            return [
++                template.format(layer_number=layer_number, expert_id=expert_id)
++                for template in templates
++            ]
++
++        if ".mlp.experts.weight1" in name or ".mlp.experts.weight2" in name:
++            num_local_experts = self.config.num_moe_experts // self.mpu.ep_size
++            templates = (
++                [
++                    "layers.{layer_number}.ffn.experts.{expert_id}.w1.weight",
++                    "layers.{layer_number}.ffn.experts.{expert_id}.w3.weight",
++                ]
++                if ".mlp.experts.weight1" in name
++                else ["layers.{layer_number}.ffn.experts.{expert_id}.w2.weight"]
++            )
++            return [
++                template.format(
++                    layer_number=layer_number,
++                    expert_id=num_local_experts * self.mpu.ep_rank + index,
++                )
++                for index in range(num_local_experts)
++                for template in templates
++            ]
++
++        for keyword, mapping_names in self._MLP_MAPPING.items():
++            if keyword in name:
++                return [
++                    mapping_name.format(layer_number=layer_number)
++                    for mapping_name in mapping_names
++                ]
++        raise NotImplementedError(f"Unsupported parameter name: {name}")
++
++    def _convert_mtp_param(self, name: str) -> list[str]:
++        if self.config.mtp_num_layers != 1:
++            raise NotImplementedError("DeepSeek V4 supports one MTP layer")
++        direct_name_mapping = {
++            "mtp.layers.0.enorm.weight": "mtp.0.enorm.weight",
++            "mtp.layers.0.hnorm.weight": "mtp.0.hnorm.weight",
++            "mtp.layers.0.e_proj.weight": "mtp.0.e_proj.weight",
++            "mtp.layers.0.h_proj.weight": "mtp.0.h_proj.weight",
++            "mtp.layers.0.final_layernorm.weight": "mtp.0.norm.weight",
++        }
++        if name in direct_name_mapping:
++            return [direct_name_mapping[name]]
++
++        prefix = "mtp.layers.0.transformer_layer"
++        if prefix not in name:
++            raise NotImplementedError(f"Unsupported MTP parameter name: {name}")
++        proxy_layer = self.config.num_layers
++        proxy_name = name.replace(prefix, f"decoder.layers.{proxy_layer}")
++        if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
++            names = self._weight_name_mapping_attention(proxy_name)
++        elif "mlp" in proxy_name:
++            names = self._weight_name_mapping_mlp(proxy_name)
++        else:
++            raise NotImplementedError(f"Unsupported MTP parameter name: {name}")
++        return [
++            converted.replace(f"layers.{proxy_layer}.", "mtp.0.")
++            for converted in names
++        ]
++
++    def _is_expert_gemm_name(self, name: str) -> bool:
++        return name.endswith((".mlp.experts.weight1", ".mlp.experts.weight2"))
++
++    def _get_hf_experts_key(self) -> str:
++        return ".ffn.experts."
++
++    def _preserve_hf_dtype(self, mcore_weights_name: str) -> bool:
++        return super()._preserve_hf_dtype(mcore_weights_name) or any(
++            key in mcore_weights_name
++            for key in ("attn_sink", ".ape", "hc_base", "hc_fn", "hc_scale", "tid2eid")
++        )
++
++    def _extra_export_keys(self, model, existing_keys):
++        keys = super()._extra_export_keys(model, existing_keys)
++        keys.extend(
++            key
++            for key in model.state_dict()
++            if ".mlp.router.tid2eid" in key
++            and "_extra_state" not in key
++            and key not in existing_keys
++        )
++        return keys
++
++    def _weight_to_hf_format(
++        self, mcore_weights_name: str, mcore_weights: torch.Tensor
++    ) -> tuple[list[str], list[torch.Tensor]]:
++        if self._is_expert_gemm_name(mcore_weights_name):
++            merged = self._weight_merge_across_tp_gemm(
++                mcore_weights_name, [mcore_weights], mcore_weights
++            )
++            hf_names, hf_weights = [], []
++            for names, tensors in self._iter_gemm_export_experts(
++                mcore_weights_name, merged
++            ):
++                hf_names.extend(names)
++                hf_weights.extend(tensors)
++            return hf_names, hf_weights
++        return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
++
++    def _weight_to_mcore_format_gemm(
++        self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
++    ) -> torch.Tensor:
++        # Runtime layout (megatron/mindspeed GroupedMLP): weight1 memory is
++        # expert-major, viewed at runtime as (num_local_experts, hidden, -1);
++        # weight2 memory viewed as (num_local_experts, -1, hidden).
++        num_local_experts = self.config.num_moe_experts // self.mpu.ep_size
++        if ".mlp.experts.weight1" in mcore_weights_name:
++            assert len(hf_weights) == num_local_experts * 2
++            expert_weights = []
++            for index in range(0, len(hf_weights), 2):
++                gate, up = hf_weights[index], hf_weights[index + 1]
++                if self.mpu.etp_size > 1:
++                    fused = torch.cat(
++                        [
++                            torch.cat((gate_part, up_part), dim=0)
++                            for gate_part, up_part in zip(
++                                gate.chunk(self.mpu.etp_size, dim=0),
++                                up.chunk(self.mpu.etp_size, dim=0),
++                            )
++                        ],
++                        dim=0,
++                    )
++                else:
++                    fused = torch.cat((gate, up), dim=0)
++                expert_weights.append(fused.t().contiguous())
++            stacked = torch.stack(expert_weights, dim=0)
++            hidden_size = stacked.shape[1]
++            return stacked.view(hidden_size, -1)
++
++        if ".mlp.experts.weight2" in mcore_weights_name:
++            assert len(hf_weights) == num_local_experts
++            return torch.cat(
++                [weight.t().contiguous() for weight in hf_weights], dim=0
++            ).contiguous()
++        raise NotImplementedError(f"Unsupported parameter name: {mcore_weights_name}")
++
++    def _weight_merge_across_tp(
++        self,
++        mcore_weights_name: str,
++        mcore_weights: list[torch.Tensor],
++        param: torch.Tensor,
++    ) -> torch.Tensor:
++        if "attn_sink" in mcore_weights_name:
++            return torch.cat(mcore_weights, dim=0)
++        if self._is_expert_gemm_name(mcore_weights_name):
++            return self._weight_merge_across_tp_gemm(
++                mcore_weights_name, mcore_weights, param
++            )
++        return super()._weight_merge_across_tp(mcore_weights_name, mcore_weights, param)
++
++    def _weight_merge_across_tp_gemm(
++        self,
++        mcore_weights_name: str,
++        mcore_weights: list[torch.Tensor],
++        param: torch.Tensor,
++    ) -> torch.Tensor:
++        # Merge ETP shards back into the full expert-major mcore tensor:
++        # weight1 -> shape (hidden, num_local_experts * 2 * ffn), memory
++        # viewed as (num_local_experts, hidden, 2 * ffn);
++        # weight2 -> shape (num_local_experts * ffn, hidden), memory viewed
++        # as (num_local_experts, ffn, hidden).
++        num_local_experts = self.config.num_moe_experts // self.mpu.ep_size
++        first = mcore_weights[0]
++
++        if ".mlp.experts.weight1" in mcore_weights_name:
++            hidden_size = first.shape[0]
++            # each shard: (hidden, E * 2I/etp) with expert-major memory,
++            # per-expert columns [gate_part | up_part]
++            gate_parts, up_parts = [], []
++            for shard in mcore_weights:
++                block = shard.view(num_local_experts, hidden_size, 2, -1)
++                gate_parts.append(block[:, :, 0])
++                up_parts.append(block[:, :, 1])
++            gates = torch.cat(gate_parts, dim=2)
++            ups = torch.cat(up_parts, dim=2)
++            merged = torch.cat([gates, ups], dim=2)
++            return merged.contiguous().view(hidden_size, -1)
++
++        hidden_size = first.shape[1]
++        shards = [
++            shard.view(num_local_experts, -1, hidden_size) for shard in mcore_weights
++        ]
++        merged = torch.cat(shards, dim=1)
++        return merged.view(-1, hidden_size)
++
++    def _weight_split_across_tp(
++        self,
++        mcore_weights_name: str,
++        mcore_weights: torch.Tensor,
++        param: torch.Tensor,
++        tp_split_size: int,
++    ) -> list[torch.Tensor]:
++        if self._is_expert_gemm_name(mcore_weights_name):
++            return self._weight_split_across_tp_gemm(
++                mcore_weights_name, mcore_weights, tp_split_size
++            )
++        return super()._weight_split_across_tp(
++            mcore_weights_name, mcore_weights, param, tp_split_size
++        )
++
++    def _weight_split_across_tp_gemm(
++        self,
++        mcore_weights_name: str,
++        mcore_weights: torch.Tensor,
++        tp_split_size: int,
++    ) -> list[torch.Tensor]:
++        return [
++            weight.contiguous()
++            for weight in self._split_gemm_weight(
++                mcore_weights_name, mcore_weights, tp_split_size
++            )
++        ]
++
++    def _iter_gemm_etp_slices(
++        self, mcore_weights_name: str, mcore_weights: torch.Tensor
++    ) -> Generator[torch.Tensor, None, None]:
++        yield from self._split_gemm_weight(
++            mcore_weights_name, mcore_weights, self.mpu.etp_size
++        )
++
++    def _split_gemm_weight(
++        self, mcore_weights_name: str, mcore_weights: torch.Tensor, split_size: int
++    ) -> Generator[torch.Tensor, None, None]:
++        if split_size == 1:
++            yield mcore_weights
++            return
++        num_local_experts = self.config.num_moe_experts // self.mpu.ep_size
++        if ".mlp.experts.weight1" in mcore_weights_name:
++            hidden_size = mcore_weights.shape[0]
++            weights = mcore_weights.view(num_local_experts, hidden_size, -1)
++            for chunk in weights.chunk(split_size, dim=2):
++                yield chunk.contiguous().view(hidden_size, -1)
++            return
++
++        hidden_size = mcore_weights.shape[-1]
++        weights = mcore_weights.view(num_local_experts, -1, hidden_size)
++        for chunk in weights.chunk(split_size, dim=1):
++            yield chunk.contiguous().view(-1, hidden_size)
++
++    def _iter_gemm_local_expert_blocks(
++        self, mcore_weights_name: str, mcore_weights: torch.Tensor
++    ) -> Generator[torch.Tensor, None, None]:
++        num_local_experts = self.config.num_moe_experts // self.mpu.ep_size
++        if ".mlp.experts.weight1" in mcore_weights_name:
++            yield from mcore_weights.view(
++                num_local_experts, mcore_weights.shape[0], -1
++            )
++            return
++        yield from mcore_weights.view(
++            num_local_experts, -1, mcore_weights.shape[1]
++        )
++
++    def _iter_gemm_export_experts(
++        self,
++        mcore_weights_name: str,
++        mcore_weights: torch.Tensor,
++        num_experts_in_tensor: Optional[int] = None,
++        expert_offset: int = 0,
++    ) -> Generator[tuple[list[str], list[torch.Tensor]], None, None]:
++        hf_names = self._weight_name_mapping_mcore_to_hf(mcore_weights_name)
++        num_local_experts = self.config.num_moe_experts // self.mpu.ep_size
++        num_in = (
++            num_local_experts
++            if num_experts_in_tensor is None
++            else num_experts_in_tensor
++        )
++        if ".mlp.experts.weight1" in mcore_weights_name:
++            assert len(hf_names) == num_local_experts * 2
++            hidden_size = mcore_weights.shape[0]
++            fused = mcore_weights.view(num_in, hidden_size, -1)
++            for index in range(num_in):
++                gate_t, up_t = fused[index].chunk(2, dim=1)
++                name_idx = 2 * (expert_offset + index)
++                yield hf_names[name_idx : name_idx + 2], [
++                    gate_t.t().contiguous(),
++                    up_t.t().contiguous(),
++                ]
++            return
++
++        assert len(hf_names) == num_local_experts
++        hidden_size = mcore_weights.shape[1]
++        blocks = mcore_weights.view(num_in, -1, hidden_size)
++        for index in range(num_in):
++            name_idx = expert_offset + index
++            yield hf_names[name_idx : name_idx + 1], [
++                blocks[index].t().contiguous()
++            ]

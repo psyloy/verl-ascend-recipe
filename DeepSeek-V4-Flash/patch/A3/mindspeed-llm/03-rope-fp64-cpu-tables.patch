@@ -1,0 +1,65 @@
+diff --git a/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py b/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py
+old mode 100644
+new mode 100755
+index 0cfd4424..80d101e5
+--- a/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py
++++ b/mindspeed_llm/core/models/common/embeddings/rotary_pos_embedding.py
+@@ -318,6 +318,9 @@ def apply_rotary_pos_emb_bshd_in_complex(t: Tensor, freqs: Tensor, rotary_interl
+     return y.to(t.dtype)
+ 
+ 
++_DEEPSEEK4_ROPE_TABLE_CACHE = {}
++
++
+ def apply_deepseek4_rotary_embedding(dim, seqlen, original_seq_len, base, factor, beta_fast, beta_slow) -> torch.Tensor:
+     """
+     Precomputes frequency-based complex exponential values for rotary positional embeddings.
+@@ -329,6 +332,15 @@ def apply_deepseek4_rotary_embedding(dim, seqlen, original_seq_len, base, factor
+         torch.Tensor: Precomputed complex exponential values for positional embeddings.
+     """
+ 
++    # Cache the (extended-length) table: this runs on every forward, and the
++    # fp64 CPU computation below is one-shot by design.
++    device = torch.npu.current_device()
++    key = (dim, seqlen, original_seq_len, float(base), float(factor),
++           float(beta_fast), float(beta_slow), device)
++    cached = _DEEPSEEK4_ROPE_TABLE_CACHE.get(key)
++    if cached is not None:
++        return cached
++
+     def find_correction_dim(num_rotations, dim, base, max_seq_len):
+         return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
+ 
+@@ -340,22 +352,27 @@ def apply_deepseek4_rotary_embedding(dim, seqlen, original_seq_len, base, factor
+     def linear_ramp_factor(min_val, max_val, dim):
+         if min_val == max_val:
+             max_val += 0.001
+-        linear_func = (torch.arange(dim, dtype=torch.float32, device=torch.npu.current_device()) - min_val) / (
++        linear_func = (torch.arange(dim, dtype=torch.float64) - min_val) / (
+             max_val - min_val
+         )
+         ramp_func = torch.clamp(linear_func, 0, 1)
+         return ramp_func
+ 
+     freqs = 1.0 / (
+-        base ** (torch.arange(0, dim, 2, dtype=torch.float32, device=torch.npu.current_device()) / dim)
++        base ** (torch.arange(0, dim, 2, dtype=torch.float64) / dim)
+     )  # RoPE编码的频率,i越接近0的越大(->1),i越接近dim/2的越小(->0);  base^(-2i/dim) (2i是0-dim的偶数序列)
+     if original_seq_len > 0:  # bing 第一处不同 V3.2是seqlen > args.original_seq_len
+         low, high = find_correction_range(beta_fast, beta_slow, dim, base, original_seq_len)
+         smooth = 1 - linear_ramp_factor(low, high, dim // 2)
+         freqs = freqs / factor * (1 - smooth) + freqs * smooth
+ 
+-    t = torch.arange(seqlen, device=torch.npu.current_device())
++    # fp64 on CPU: identical formula/op-order to the vllm-ascend rollout
++    # (precompute_freqs_cis), so both tables round to the same complex64
++    # bits; fp32 angles would drift ~2.4e-2 rad at 1M positions.
++    t = torch.arange(seqlen, dtype=torch.float64)
+     freqs = torch.outer(t, freqs)
+-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
++    freqs_cis = torch.polar(torch.ones_like(freqs), freqs).to(torch.complex64)
+ 
+-    return freqs_cis
++    result = freqs_cis.to(device)
++    _DEEPSEEK4_ROPE_TABLE_CACHE[key] = result
++    return result

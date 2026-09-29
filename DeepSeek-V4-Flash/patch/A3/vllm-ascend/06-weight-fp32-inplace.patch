@@ -1,0 +1,28 @@
+diff --git a/vllm_ascend/ops/linear.py b/vllm_ascend/ops/linear.py
+index 859d51393..45356362c 100644
+--- a/vllm_ascend/ops/linear.py
++++ b/vllm_ascend/ops/linear.py
+@@ -37,7 +37,7 @@ from vllm.model_executor.layers.linear import (  # noqa
+     UnquantizedLinearMethod,
+ )
+ from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
+-from vllm.model_executor.utils import set_weight_attrs
++from vllm.model_executor.utils import replace_parameter, set_weight_attrs
+ from vllm.utils.torch_utils import direct_register_custom_op
+ 
+ from vllm_ascend.ops.linear_op import get_parallel_op, get_replicated_op
+@@ -89,7 +89,12 @@ class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
+         # must use fp32 to avoid accuracy degradation in dsv4.
+         if getattr(layer, "precast_fp32_weight", False):
+             weight_fp32 = layer.weight.data.to(torch.float32)
+-            layer.weight_fp32 = weight_fp32 if keep_nd_weight else maybe_trans_nz(weight_fp32)
++            new_fp32 = weight_fp32 if keep_nd_weight else maybe_trans_nz(weight_fp32)
++            # ACL graph holds weight_fp32 by reference. If a second
++            # after-loading (RL update_weights) replaces the reference, the
++            # captured graph still points at the old tensor and sampling would
++            # use stale weights; copy in place instead.
++            replace_parameter(layer, "weight_fp32", new_fp32, prefer_copy=True)
+         if "conv1d" not in layer.prefix:
+             # 310P torch_npu rejects FRACTAL_NZ matmul when the weight-side
+             # matrix has n=1 or k=1. Keep scalar gates such as Qwen MoE's
+

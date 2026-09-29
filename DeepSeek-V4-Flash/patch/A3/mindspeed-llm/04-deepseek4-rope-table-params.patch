@@ -1,0 +1,37 @@
+diff --git a/mindspeed_llm/core/models/deepseek4/deepseek4_model.py b/mindspeed_llm/core/models/deepseek4/deepseek4_model.py
+old mode 100644
+new mode 100755
+index cae051fd..2446e07d
+--- a/mindspeed_llm/core/models/deepseek4/deepseek4_model.py
++++ b/mindspeed_llm/core/models/deepseek4/deepseek4_model.py
+@@ -274,7 +274,8 @@ class DeepSeek4Model(MegatronCoreGPTModel):
+             compress_rope_theta = args.compress_rope_theta  # for compress_ratio>1
+             rotary_pos_emb_comp = self.rotary_pos_emb(
+                 args.qk_pos_emb_head_dim,
+-                args.rope_scaling_original_max_position_embeddings,
++                # table spans the full yarn-extended context
++                args.max_position_embeddings,
+                 args.original_seq_len,
+                 compress_rope_theta,
+                 args.rope_factor,
+@@ -283,14 +284,18 @@ class DeepSeek4Model(MegatronCoreGPTModel):
+             )
+             rotary_pos_emb_no_comp = self.rotary_pos_emb(
+                 args.qk_pos_emb_head_dim,
+-                args.rope_scaling_original_max_position_embeddings,
++                # table spans the full yarn-extended context
++                args.max_position_embeddings,
+                 0,
+                 rope_theta,
+                 args.rope_factor,
+                 args.beta_fast,
+                 args.beta_slow,
+             )
+-            rotary_pos_emb = torch.stack((rotary_pos_emb_comp, rotary_pos_emb_no_comp))
++            rotary_pos_emb = self.rotary_pos_emb_cache.get('dsv4_tables')
++            if rotary_pos_emb is None:
++                rotary_pos_emb = torch.stack((rotary_pos_emb_comp, rotary_pos_emb_no_comp))
++                self.rotary_pos_emb_cache['dsv4_tables'] = rotary_pos_emb
+         else:
+             pass
+         if self.pre_process:

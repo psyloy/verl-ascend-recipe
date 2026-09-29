@@ -1,0 +1,15 @@
+diff --git a/verl/models/mcore/util.py b/verl/models/mcore/util.py
+index 6a5541e7..0f567c18 100644
+--- a/verl/models/mcore/util.py
++++ b/verl/models/mcore/util.py
+@@ -682,6 +682,10 @@ def preprocess_bshd_engine(
+     dense_shape = tuple(input_ids.shape[2:])
+     seqlens_in_batch = input_ids.offsets().diff()
+     max_seqlen = forced_max_seqlen if forced_max_seqlen is not None else seqlens_in_batch.max().item()
++    if is_npu_available:
++        # NPU kernels need max_seqlen 1024-aligned, floor 2048.
++        align_value = 1024
++        max_seqlen = max(((max_seqlen + align_value - 1) // align_value) * align_value, 2048)
+     tp_size = mpu.get_tensor_model_parallel_world_size()
+     # For CP (zigzag), sequence length must be divisible by (2 * cp_size).
+     # After zigzag-CP split each rank holds s/cp_size tokens, which must also be

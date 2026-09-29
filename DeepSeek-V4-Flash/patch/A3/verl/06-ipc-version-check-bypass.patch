@@ -1,0 +1,14 @@
+diff --git a/verl/utils/device.py b/verl/utils/device.py
+index 33f0743f..a0b05fd0 100644
+--- a/verl/utils/device.py
++++ b/verl/utils/device.py
+@@ -284,6 +284,9 @@ def check_ipc_version_support(software_version: str, cann_version: str) -> bool:
+     Raises:
+         RuntimeError: If version format is invalid
+     """
++    # A5 toolkits are not recognised by the version check below; force IPC on.
++    return True
++
+     # For software_version like "25.3.rc1.2", "25.5.0", or "25.5.t3.b001",
+     # we need to extract the base version
+     # Use regex to extract version with the following rules:

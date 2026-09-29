@@ -1,0 +1,15 @@
+diff --git a/verl/workers/rollout/vllm_rollout/bucketed_weight_transfer.py b/verl/workers/rollout/vllm_rollout/bucketed_weight_transfer.py
+index 521d8907..08663a86 100644
+--- a/verl/workers/rollout/vllm_rollout/bucketed_weight_transfer.py
++++ b/verl/workers/rollout/vllm_rollout/bucketed_weight_transfer.py
+@@ -140,6 +140,10 @@ class BucketedWeightSender:
+                     self._direct_send_large_weight(name, weight)
+                     continue
+ 
++                # NPU IPC needs bucket offsets aligned to max(dtype width, 4).
++                alignment = max(weight.element_size(), 4)
++                if offset % alignment != 0:
++                    offset = (offset + alignment - 1) // alignment * alignment
+                 bucket_meta[name] = {
+                     "name": name,
+                     "shape": weight.shape,

@@ -1,0 +1,18 @@
+diff --git a/verl/utils/vllm/patch.py b/verl/utils/vllm/patch.py
+index 1e2224f6..ca64e3bf 100644
+--- a/verl/utils/vllm/patch.py
++++ b/verl/utils/vllm/patch.py
+@@ -73,6 +73,13 @@ try:
+ except ImportError:
+     pass
+ 
++try:
++    from vllm_ascend.models.deepseek_v4 import AscendDeepseekV4ForCausalLM
++
++    SUPPORTED_MOE_MODELS.append(AscendDeepseekV4ForCausalLM)
++except ImportError:
++    pass
++
+ 
+ def patch_vllm_moe_model_weight_loader(model):
+     # this is a work around to load the weight of vllm fused moe model
