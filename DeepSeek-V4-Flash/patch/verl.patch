@@ -857,7 +857,7 @@ index eb337939..81ac0ea1 100644
                      "name": name,
                      "shape": weight.shape,
 diff --git a/verl/workers/rollout/vllm_rollout/vllm_async_server.py b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
-index 23c8594f..763c63c3 100644
+index 23c8594f..f565e01c 100644
 --- a/verl/workers/rollout/vllm_rollout/vllm_async_server.py
 +++ b/verl/workers/rollout/vllm_rollout/vllm_async_server.py
 @@ -53,7 +53,10 @@ from verl.workers.rollout.vllm_rollout.utils import (
@@ -880,7 +880,25 @@ index 23c8594f..763c63c3 100644
          return TokenOutput(
              token_ids=token_ids,
              log_probs=log_probs,
-@@ -780,6 +782,7 @@ class vLLMHttpServer:
+@@ -577,6 +579,8 @@ class vLLMHttpServer:
+             logger.info("skip sleep in standalone mode")
+ 
+     async def start_profile(self, **kwargs):
++        if self.node_rank != 0:
++            return
+         if (
+             self.profiler_controller.check_enable()
+             and self.profiler_controller.check_this_rank()
+@@ -585,6 +589,8 @@ class vLLMHttpServer:
+             await self.engine.start_profile(**kwargs)
+ 
+     async def stop_profile(self):
++        if self.node_rank != 0:
++            return
+         if (
+             self.profiler_controller.check_enable()
+             and self.profiler_controller.check_this_rank()
+@@ -780,6 +786,7 @@ class vLLMHttpServer:
  
              check_vllm_ascend_before_server_launch()
  
@@ -888,7 +906,7 @@ index 23c8594f..763c63c3 100644
          # Handle QAT (Quantization-Aware Training) configuration
          qat_config_dict = getattr(self.config, "qat", {}) or {}
          if qat_config_dict.get("enable", False):
-@@ -853,12 +856,18 @@ class vLLMHttpServer:
+@@ -853,12 +860,18 @@ class vLLMHttpServer:
  
      async def _sleep_hybrid(self):
          """HYBRID sleep: lora adapters only need level=1; full weights need level=2."""
@@ -909,7 +927,7 @@ index 23c8594f..763c63c3 100644
          await self.engine.collective_rpc("sleep", kwargs={"level": sleep_level})
          if _VLLM_VERSION >= version.parse("0.17.0"):
              await self.engine.reset_encoder_cache()
-@@ -929,6 +938,7 @@ class vLLMReplica(RolloutReplica):
+@@ -929,6 +942,7 @@ class vLLMReplica(RolloutReplica):
                          # https://docs.vllm.ai/en/latest/usage/troubleshooting.html?h=nccl_cumem_enable#known-issues
                          # https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
                          "NCCL_CUMEM_ENABLE": "0",
